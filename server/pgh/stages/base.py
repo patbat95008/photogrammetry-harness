@@ -10,6 +10,7 @@ to that stage.
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +82,11 @@ class StageContext:
     #: Scratch directory that is atomically promoted on success and discarded on
     #: failure, so a crashed stage never leaves half-written artifacts in place.
     scratch: Path
+    #: Set when the user cancels. Hand this to ``proc.stream_with_cancel`` for any
+    #: child that can fall silent: ``CancelToken`` is only observed at the safe
+    #: points a stage chooses, and OpenMVS prints nothing at all for minutes at a
+    #: time, so a per-output-line check would never fire. See ``stages/shell.py``.
+    proc_cancel: threading.Event = field(default_factory=threading.Event)
 
     def progress(
         self,

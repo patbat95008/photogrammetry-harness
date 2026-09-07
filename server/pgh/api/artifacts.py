@@ -1,8 +1,9 @@
-"""Serving extracted frames and their thumbnails."""
+"""Serving extracted frames, thumbnails, and the files the later stages produce."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,35 @@ from ..store import RunHandle
 from .deps import get_run
 
 router = APIRouter(prefix="/api/runs/{run_id}", tags=["artifacts"])
+
+#: What may be served out of a run directory, and as what. An allowlist rather than
+#: a denylist: a run directory also holds a COLMAP database and tens of gigabytes of
+#: depth maps, none of which any client has a reason to ask for.
+ARTIFACT_MEDIA_TYPES: dict[str, str] = {
+    ".ply": "application/octet-stream",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".txt": "text/plain; charset=utf-8",
+    ".obj": "text/plain; charset=utf-8",
+    ".mtl": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def _safe_path(run: RunHandle, relative: str) -> Path:
+    """Resolve a client-supplied path inside the run directory, or refuse.
+
+    ``resolve()`` before comparing, so neither ``..`` nor a symlink can walk out.
+    """
+    target = (run.dir / relative).resolve()
+    try:
+        target.relative_to(run.dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="path escapes the run") from None
+    return target
 
 
 @router.get("/frames")
@@ -72,3 +102,21 @@ def get_frame(
             return FileResponse(path, media_type=media.replace("image/jpg", "image/jpeg"))
 
     raise HTTPException(status_code=404, detail=f"no frame {slot} in {group}")
+
+
+@router.get("/artifacts/{relative:path}")
+def get_artifact(relative: str, run: RunHandle = Depends(get_run)) -> FileResponse:
+    """Serve a stage output by its run-relative path.
+
+    This is how the point-cloud viewer fetches a preview PLY. ``FileResponse`` honours
+    range requests, so a large cloud streams rather than arriving all at once.
+    """
+    target = _safe_path(run, relative)
+    media = ARTIFACT_MEDIA_TYPES.get(target.suffix.lower())
+    if media is None:
+        raise HTTPException(
+            status_code=400, detail=f"{target.suffix or 'that file type'} is not served"
+        )
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"no artifact at {relative}")
+    return FileResponse(target, media_type=media)

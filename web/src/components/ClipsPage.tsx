@@ -107,6 +107,10 @@ export default function ClipsPage() {
     segment: string;
     kind: "rig" | "single" | "independent";
   }>(null);
+  // Which kind of source this run is built from. A run is one or the other: the
+  // slot clock that pairs frames across cameras comes from video timestamps, and
+  // photographs have none.
+  const [sourceKind, setSourceKind] = useState<"video" | "photos">("video");
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResults | null>(null);
@@ -136,7 +140,8 @@ export default function ClipsPage() {
         role,
         camera_group: role,
         segment_id: target.segment,
-        segment_kind: target.kind,
+        segment_kind: sourceKind === "photos" ? "single" : target.kind,
+        kind: sourceKind,
       });
       await load();
     } catch (err) {
@@ -175,6 +180,31 @@ export default function ClipsPage() {
       </div>
 
       {error && <div className="banner bad">{error}</div>}
+
+      {manifest.clips.length === 0 && (
+        <div className="source-toggle">
+          <button
+            className={sourceKind === "video" ? "on" : ""}
+            onClick={() => setSourceKind("video")}
+          >
+            <strong>Video clips</strong>
+            <span>
+              A chair spin or a handheld orbit. Frames are cut on a shared timeline,
+              so two cameras can be paired instant by instant.
+            </span>
+          </button>
+          <button
+            className={sourceKind === "photos" ? "on" : ""}
+            onClick={() => setSourceKind("photos")}
+          >
+            <strong>Photo set</strong>
+            <span>
+              A folder of stills. No rolling shutter, no frame-rate guessing, and real
+              EXIF — the cleanest input there is, and the simplest thing to try first.
+            </span>
+          </button>
+        </div>
+      )}
 
       <CapturePanel runId={runId} manifest={manifest} onChange={() => void load()} />
 
@@ -315,7 +345,13 @@ export default function ClipsPage() {
 
       <DiskUsage usage={detail.disk_usage ?? {}} />
 
-      {browsing && <FileBrowser onPick={pick} onClose={() => setBrowsing(null)} />}
+      {browsing && (
+        <FileBrowser
+          mode={sourceKind}
+          onPick={pick}
+          onClose={() => setBrowsing(null)}
+        />
+      )}
     </div>
   );
 }

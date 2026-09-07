@@ -35,6 +35,44 @@ The rest of this checklist assumes the chair-spin mode, which is the harder one.
 
 ---
 
+## Or shoot stills instead
+
+The harness takes a folder of photographs as an alternative to video — pick **Photo
+set** at the top of the Clips page. For everything except a moving subject, stills are
+the better input, and not marginally:
+
+| | Video frame | Photograph |
+|---|---|---|
+| Rolling shutter | Skews every moving frame | None on a still |
+| Compression | Inter-frame, so detail is borrowed from neighbours | One frame, one encode |
+| Frame rate | Has to be detected, and phones lie about it | Not a concept |
+| Focal length | Not recorded; COLMAP guesses from image size | In EXIF, and COLMAP uses it |
+| Resolution | Capped by the video mode | The sensor's full output |
+
+Photographs are hardlinked into the run untouched wherever possible, precisely so the
+EXIF survives. Two exceptions: an image larger than the size cap is resampled, and an
+image carrying an EXIF rotation flag is physically rotated and the flag cleared,
+because COLMAP does not apply that flag reliably.
+
+**Shooting a photo set**
+
+- **Overlap generously.** Aim for roughly 70% shared content between neighbours —
+  in practice a step every 10° or so around the subject. Too little overlap is the
+  single most common cause of a reconstruction that will not close.
+- **Lock focus, aperture and ISO,** and do not change the zoom. Changing focal length
+  mid-shoot means one camera model no longer describes the set; if you must, give each
+  focal length its own camera group.
+- **Do not crop afterwards.** A crop changes the effective focal length while leaving
+  the EXIF claiming otherwise, which is worse than having no EXIF at all.
+- **Export at full resolution,** and avoid anything that strips metadata. Messaging
+  apps and cloud sync are the usual culprits.
+- **Shoot more than one height.** A single ring around the subject leaves the top and
+  underside unseen, and the mesher will invent them rather than leave a hole.
+- RAW and HEIC are not decodable here — export to JPEG or TIFF first. The harness
+  names the files it could not read rather than skipping them quietly.
+
+---
+
 ## Before you sit down
 
 **1. Measure the baseline between the two cameras.** *(fixed mounts only)*

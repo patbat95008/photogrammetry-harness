@@ -314,6 +314,43 @@ def _long_paths_enabled() -> bool | None:
         return False
 
 
+def probe_vocab_tree() -> dict[str, Any]:
+    """Report the COLMAP vocabulary tree, and whether it is a format this build reads.
+
+    Not blocking: without a usable tree the align stage matches exhaustively, which
+    is slower for large image counts but perfectly correct -- and for a few hundred
+    images, barely slower at all.
+
+    Worth surfacing because the failure it prevents is nasty. COLMAP replaced FLANN
+    with faiss in May 2025, and the trees still published at demuc.de are the old
+    format. Handing one to a current build aborts the process outright, partway
+    through matching, after feature extraction has already been paid for.
+    """
+    # Imported here rather than at module scope: the stages package imports this
+    # module for colmap_dialect(), so a top-level import would be circular.
+    from .stages.sparse import VOCAB_TREE, vocab_tree_status
+
+    status = vocab_tree_status()
+    notes = {
+        "ok": "loop detection is available",
+        "missing": (
+            "not present, so the align stage matches exhaustively. Fine below roughly "
+            "500 images; above that, matching time grows with the square of the count."
+        ),
+        "legacy": (
+            "present but in the old FLANN format, which this COLMAP cannot read. The "
+            "align stage falls back to exhaustive matching rather than crashing. No "
+            "faiss-format tree has been published yet."
+        ),
+    }
+    return {
+        "path": str(VOCAB_TREE),
+        "status": status,
+        "usable": status == "ok",
+        "note": notes[status],
+    }
+
+
 def doctor_report() -> dict[str, Any]:
     """The full environment health report backing GET /api/doctor."""
     tools = [probe_tool(spec) for spec in config.TOOL_SPECS]
@@ -333,6 +370,7 @@ def doctor_report() -> dict[str, Any]:
         "python": sys.version.split()[0],
         "tools": [asdict(t) for t in tools],
         "colmap_dialect": colmap_dialect(),
+        "vocab_tree": probe_vocab_tree(),
         "sam2": sam2,
         "torch": torch_info,
         "gpu": probe_gpu(),

@@ -12,6 +12,7 @@ interface StubDetail {
   stage_id: string;
   state: string;
   blocked_by: string[];
+  skippable?: boolean;
   planned: PlannedStage | null;
 }
 
@@ -35,6 +36,8 @@ const STAGE_TITLE: Record<string, string> = {
 export default function StageStub({ stageId }: { stageId: string }) {
   const { runId = "" } = useParams();
   const [detail, setDetail] = useState<StubDetail | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/runs/${runId}/stages/${stageId}`);
@@ -45,6 +48,25 @@ export default function StageStub({ stageId }: { stageId: string }) {
     void load();
   }, [load]);
 
+  const skipped = detail?.state === "skipped";
+
+  async function toggleSkip() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/runs/${runId}/stages/${stageId}/${skipped ? "unskip" : "skip"}`,
+        { method: "POST" },
+      );
+      if (!res.ok) throw new Error((await res.json()).detail ?? res.statusText);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const planned = detail?.planned;
 
   return (
@@ -54,17 +76,39 @@ export default function StageStub({ stageId }: { stageId: string }) {
         <p>{planned?.summary ?? "This stage is not wired up yet."}</p>
       </div>
 
-      <div className="banner">
-        <span className="dot warn">●</span>
-        <div>
-          <strong>Not built yet</strong>
-          <span className="muted">
-            {detail?.blocked_by.length
-              ? `It will also need these to finish first: ${detail.blocked_by.join(", ")}.`
-              : "Its inputs are ready; only the stage itself is missing."}
-          </span>
+      {error && <div className="banner bad">{error}</div>}
+
+      {skipped ? (
+        <div className="banner">
+          <span className="dot ok">●</span>
+          <div>
+            <strong>Skipped</strong>
+            <span className="muted">
+              Later stages treat this as satisfied and will run without it.
+            </span>
+          </div>
+          <button className="refresh" disabled={busy} onClick={toggleSkip}>
+            Un-skip
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="banner">
+          <span className="dot warn">●</span>
+          <div>
+            <strong>Not built yet</strong>
+            <span className="muted">
+              {detail?.blocked_by.length
+                ? `It will also need these to finish first: ${detail.blocked_by.join(", ")}.`
+                : "Its inputs are ready; only the stage itself is missing."}
+            </span>
+          </div>
+          {detail?.skippable && (
+            <button className="refresh" disabled={busy} onClick={toggleSkip}>
+              Skip this stage
+            </button>
+          )}
+        </div>
+      )}
 
       {planned?.note && (
         <div className="banner note">

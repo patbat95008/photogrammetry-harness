@@ -88,6 +88,7 @@ export function useEventStream(runId: string | undefined, stageId?: string): Str
       "stage.log",
       "stage.finished",
       "stage.failed",
+      "stage.skipped",
       "stage.cancelled",
       "stage.params",
       "sync.updated",

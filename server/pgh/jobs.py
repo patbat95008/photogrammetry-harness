@@ -233,6 +233,7 @@ class JobRunner:
                 cancel=job.cancel,
                 report=report,
                 scratch=scratch,
+                proc_cancel=job.proc_cancel,
             )
 
             try:

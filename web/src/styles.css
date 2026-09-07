@@ -858,3 +858,199 @@ button.primary:disabled {
   border-radius: 2px;
   margin-right: 5px;
 }
+
+/* -- selection contact sheet ---------------------------------------------- */
+
+.sheet-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+}
+
+.chip {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel-2);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* Kept frames read as present, dropped ones as absent — the state should be
+   legible from across the room, not by reading a caption per cell. */
+.select-cell.keep {
+  border-color: rgba(63, 185, 80, 0.75);
+}
+
+.select-cell.drop {
+  border-color: var(--border);
+  opacity: 0.38;
+}
+
+.select-cell.drop:hover {
+  opacity: 0.85;
+}
+
+/* A hand-made decision gets a corner flag, so it is distinguishable from one the
+   automatic rules happened to agree with. */
+.select-cell.overridden::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-width: 0 10px 10px 0;
+  border-style: solid;
+  border-color: transparent var(--accent) transparent transparent;
+}
+
+/* -- point cloud viewer ---------------------------------------------------- */
+
+.cloud-viewer {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.cloud-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel-2);
+}
+
+.cloud-stat {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.cloud-warn {
+  color: var(--warn);
+}
+
+.cloud-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.cloud-control input[type="range"] {
+  width: 110px;
+}
+
+.cloud-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.cloud-canvas canvas {
+  display: block;
+  /* Without this the canvas takes pointer events the toolbar needs on some
+     touch devices, and orbiting steals the page scroll. */
+  touch-action: none;
+}
+
+.cloud-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.cloud-status.cloud-error {
+  color: var(--bad);
+}
+
+/* -- stage results --------------------------------------------------------- */
+
+.stage-results {
+  margin-top: 16px;
+}
+
+.stage-results h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.stage-note {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 0 0 12px;
+  max-width: 76ch;
+}
+
+.registration-panel {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  padding: 10px 14px;
+}
+
+.registration-panel summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.registration-list {
+  margin: 6px 0 10px;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* -- clip source toggle ---------------------------------------------------- */
+
+.source-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.source-toggle button {
+  flex: 1;
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel-2);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.source-toggle button.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.source-toggle strong {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.source-toggle span {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}

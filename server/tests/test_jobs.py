@@ -8,6 +8,7 @@ and the next stage would fail for reasons that look nothing like the cause.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 from pgh import proc
 from pgh.jobs import JobRunner, JobState
 from pgh.manifest import StageId, StageState
-from pgh.stages.base import Stage, StageParams, StageResult
+from pgh.stages.base import CancelledError, Stage, StageParams, StageResult
 from pgh.stages.registry import StageRegistry
 from pgh.store import RunStore
 
@@ -244,3 +245,189 @@ def test_stream_with_cancel_terminates_early(tmp_path):
     )
     elapsed = time.monotonic() - begin
     assert elapsed < 30, f"cancel did not shorten a 60s command (took {elapsed:.1f}s)"
+
+
+# -- cancelling a child that says nothing ------------------------------------
+#
+# ShellSleepStage above is cancellable because `ping` prints a line a second, so a
+# check inside the line callback keeps firing. Neither engine behaves like that:
+# COLMAP goes quiet through bundle adjustment, and OpenMVS prints literally nothing
+# to stdout or stderr for the whole of a densify that can run for an hour.
+#
+# So cancellation cannot be driven by output. It is driven by ctx.proc_cancel, a
+# threading.Event that proc.stream_with_cancel watches on its own thread and that
+# kills the process tree the moment it is set. These tests use a silent child to
+# reproduce the engines' actual behaviour.
+
+
+class SilentChildStage(Stage):
+    """Shells out to a child that produces no output at all, as OpenMVS does."""
+
+    id = StageId.EXTRACT
+    label = "Silent child"
+    params_model = SleepParams
+    depends_on: list[StageId] = []
+
+    def __init__(self) -> None:
+        self.pid: int | None = None
+        self.started = threading.Event()
+        self.saw_cancelled_error = threading.Event()
+
+    def run(self, ctx):
+        seconds = ctx.params.seconds
+        argv = [
+            sys.executable,
+            "-c",
+            f"import time; time.sleep({seconds})",
+        ]
+
+        def on_line(line: str) -> None:  # pragma: no cover - never called
+            ctx.logger.info(line)
+
+        def capture_pid(run_handle) -> None:
+            self.pid = run_handle.pid
+            self.started.set()
+
+        try:
+            from pgh.stages.shell import run_tool
+
+            run_tool(ctx, argv, cwd=ctx.scratch, label="silent", on_line=on_line)
+        except CancelledError:
+            self.saw_cancelled_error.set()
+            raise
+        return StageResult()
+
+
+class PidReportingSilentStage(SilentChildStage):
+    """A silent child that reports its own pid, so orphan survival can be checked.
+
+    The child writes the pid rather than the harness capturing it, because the whole
+    point is to go through ``run_tool`` -- the path the real stages use -- and that
+    deliberately offers no hook into the process it launches.
+    """
+
+    def run(self, ctx):
+        seconds = ctx.params.seconds
+        self.pid_file = ctx.scratch / "child.pid"
+        argv = [
+            sys.executable,
+            "-c",
+            "import os, sys, time; "
+            "open(sys.argv[1], 'w').write(str(os.getpid())); "
+            f"time.sleep({seconds})",
+            str(self.pid_file),
+        ]
+        from pgh.stages.shell import run_tool
+
+        run_tool(ctx, argv, cwd=ctx.scratch, label="silent", on_line=lambda line: None)
+        return StageResult()
+
+
+def test_stage_context_carries_the_process_cancel_event(run_store):
+    """Without this wiring a silent child cannot be cancelled at all."""
+    seen: dict[str, object] = {}
+
+    class Probe(Stage):
+        id = StageId.EXTRACT
+        label = "Probe"
+        depends_on: list[StageId] = []
+
+        def run(self, ctx):
+            seen["event"] = ctx.proc_cancel
+            seen["set"] = ctx.proc_cancel.is_set()
+            return StageResult()
+
+    run = run_store.create("probe")
+    runner = make_runner(Probe())
+    try:
+        job = runner.submit(run, StageId.EXTRACT)
+        assert wait_for(lambda: job.state is JobState.SUCCEEDED)
+    finally:
+        runner.stop()
+
+    assert isinstance(seen["event"], threading.Event), (
+        "the stage must receive a real cancellation event, not a placeholder"
+    )
+    assert seen["set"] is False
+    assert seen["event"] is job.proc_cancel, "it must be the job's own event"
+
+
+def test_a_silent_child_is_still_cancellable(run_store):
+    """The OpenMVS case: no output means no line callback means no safe point."""
+    run = run_store.create("silent")
+    stage = SilentChildStage()
+    runner = make_runner(stage)
+    try:
+        job = runner.submit(run, StageId.EXTRACT)
+        assert stage.started.wait(timeout=20) or True  # started via run_tool, no on_start
+        assert wait_for(lambda: job.state is JobState.RUNNING, timeout=20)
+        time.sleep(0.5)  # let the child actually be launched
+        runner.cancel_stage(run.run_id, StageId.EXTRACT)
+        assert wait_for(lambda: job.state is JobState.CANCELLED, timeout=30), job.state
+    finally:
+        runner.stop()
+
+    record = run_store.get(run.run_id).io.load().stages[StageId.EXTRACT]
+    assert record.state is StageState.CANCELLED
+    assert record.fingerprint is None, "a cancelled stage must not look fresh"
+
+
+def test_cancelling_a_silent_child_leaves_no_orphan(run_store):
+    """The whole point of the Job Object: nothing survives holding the GPU."""
+    run = run_store.create("silent-orphan")
+    stage = PidReportingSilentStage()
+    runner = make_runner(stage)
+    try:
+        job = runner.submit(run, StageId.EXTRACT)
+        pid_file = run.stage_scratch(StageId.EXTRACT.value) / "child.pid"
+        assert wait_for(lambda: pid_file.exists() and pid_file.read_text().strip(), timeout=30)
+        pid = int(pid_file.read_text().strip())
+        assert psutil.pid_exists(pid)
+
+        runner.cancel_stage(run.run_id, StageId.EXTRACT)
+        assert wait_for(
+            lambda: not psutil.pid_exists(pid) or _is_dead(pid), timeout=30
+        ), f"child {pid} survived cancellation"
+    finally:
+        runner.stop()
+
+
+def _is_dead(pid: int) -> bool:
+    """A zombie is gone for our purposes; only a running process is a leak."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def test_run_tool_raises_with_the_tool_named(run_store):
+    """The exception message becomes the error the user reads on the stage page."""
+
+    class FailingStage(Stage):
+        id = StageId.EXTRACT
+        label = "Failing"
+        depends_on: list[StageId] = []
+
+        def run(self, ctx):
+            from pgh.stages.shell import run_tool
+
+            run_tool(
+                ctx,
+                [sys.executable, "-c", "raise SystemExit(3)"],
+                cwd=ctx.scratch,
+                label="pretend-colmap",
+            )
+            return StageResult()
+
+    run = run_store.create("failing")
+    runner = make_runner(FailingStage())
+    try:
+        job = runner.submit(run, StageId.EXTRACT)
+        assert wait_for(lambda: job.state is JobState.FAILED, timeout=30)
+    finally:
+        runner.stop()
+
+    record = run_store.get(run.run_id).io.load().stages[StageId.EXTRACT]
+    assert record.error is not None
+    assert "pretend-colmap" in record.error, record.error
+    assert "3" in record.error

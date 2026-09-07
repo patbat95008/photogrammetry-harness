@@ -8,20 +8,29 @@ One folder per physical camera, so ``--ImageReader.single_camera_per_folder 1``
 gives COLMAP one intrinsic per camera. Filenames are shared timeline slots, so
 ``cam_high/000042.jpg`` and ``cam_eye/000042.jpg`` are the same instant and can
 later be declared a rig frame without re-extracting anything.
+
+A run whose clips are photo folders takes the ingest branch instead: same output
+layout, same per-frame analysis, no ffmpeg. Everything downstream reads
+``frames/`` and ``frames.jsonl`` and never learns which branch produced them. The
+one honest difference is that photographs have an order but no clock, so their
+timing fields are null rather than zero.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import Field
 
-from ..manifest import RunManifest, StageId, TimelineSummary
+from .. import photos as photo_scan
+from ..manifest import PhotoSetProbe, RunManifest, SourceKind, StageId, TimelineSummary
 from ..timeline import SegmentPlan, compute_segment_plan, residual_p95
 from ..vendor import ffmpeg
 from .base import Stage, StageContext, StageParams, StageResult
@@ -73,29 +82,32 @@ class ExtractStage(Stage):
     def external_inputs(self, manifest: RunManifest) -> dict[str, Any]:
         """Source identity, grouping and sync offsets all change the output frames."""
         return {
-            "clips": [
-                {
-                    "clip_id": c.clip_id,
-                    "camera_group": c.camera_group,
-                    "segment_id": c.segment_id,
-                    "identity": (
-                        c.source_identity.model_dump() if c.source_identity else None
-                    ),
-                    "offset": round(c.time_offset_s, 6),
-                    "rotation": c.probe.effective_rotation,
-                    "is_hdr": c.probe.is_hdr,
-                }
-                for c in manifest.enabled_clips()
-            ],
+            "clips": [_clip_inputs(c) for c in manifest.enabled_clips()],
             "ffmpeg": _ffmpeg_version(),
         }
 
     def preflight(self, manifest: RunManifest) -> list[str]:
         problems: list[str] = []
-        if not manifest.enabled_clips():
-            problems.append("no enabled clips: add at least one source video")
-        for clip in manifest.enabled_clips():
-            if not Path(clip.source_path).exists():
+        clips = manifest.enabled_clips()
+        if not clips:
+            problems.append("no enabled clips: add at least one source video or photo set")
+
+        kinds = {c.kind for c in clips}
+        if len(kinds) > 1:
+            problems.append(
+                "this run mixes video clips and photo sets. The slot clock that pairs "
+                "frames across cameras comes from video timestamps, and photographs "
+                "have none, so half the timeline would be invented. Use one or the "
+                "other per run."
+            )
+
+        for clip in clips:
+            source = Path(clip.source_path)
+            if clip.kind is SourceKind.PHOTOS:
+                if not source.is_dir():
+                    problems.append(f"photo folder is missing: {clip.source_path}")
+                continue
+            if not source.exists():
                 problems.append(f"source file is missing: {clip.source_path}")
             if not clip.probe.packets_path:
                 problems.append(f"{clip.clip_id} has no packet timeline; re-add the clip")
@@ -113,6 +125,9 @@ class ExtractStage(Stage):
         params: ExtractParams = ctx.params  # type: ignore[assignment]
         manifest = ctx.manifest
         run_dir = ctx.run_dir
+
+        if any(c.kind is SourceKind.PHOTOS for c in manifest.enabled_clips()):
+            return _run_photo_ingest(ctx, params)
 
         pts_by_clip = _load_packet_timelines(manifest, run_dir)
         plans = _plan_segments(manifest, pts_by_clip, params)
@@ -177,6 +192,33 @@ class ExtractStage(Stage):
 
 
 # -- planning ----------------------------------------------------------------
+
+
+def _clip_inputs(clip) -> dict[str, Any]:
+    """The parts of a clip that decide what frames come out of it.
+
+    A video clip contributes exactly the keys it always has. The photo-set keys are
+    added only for a photo set, deliberately: adding a key unconditionally would
+    change the hash of every existing video run and mark hours of downstream
+    reconstruction stale for a source that had not changed at all.
+    """
+    inputs: dict[str, Any] = {
+        "clip_id": clip.clip_id,
+        "camera_group": clip.camera_group,
+        "segment_id": clip.segment_id,
+        "identity": (
+            clip.source_identity.model_dump() if clip.source_identity else None
+        ),
+        "offset": round(clip.time_offset_s, 6),
+        "rotation": clip.probe.effective_rotation,
+        "is_hdr": clip.probe.is_hdr,
+    }
+    if clip.kind is SourceKind.PHOTOS:
+        # A photo folder has no single source identity, so its contents are the
+        # identity: add, remove or replace an image and this changes.
+        inputs["kind"] = clip.kind.value
+        inputs["photos"] = _photo_listing_digest(Path(clip.source_path))
+    return inputs
 
 
 def _load_packet_timelines(manifest: RunManifest, run_dir: Path) -> dict[str, list[float]]:
@@ -398,6 +440,16 @@ def _hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+def _round6(value: float | None) -> float | None:
+    """Round a timing field, preserving None.
+
+    Photographs have an order but no clock. Writing 0.0 where there is no timestamp
+    would put a number that means nothing into frames.jsonl, and later stages cannot
+    tell an invented zero from a real one.
+    """
+    return None if value is None else round(value, 6)
+
+
 def _postprocess(
     ctx: StageContext,
     clip,
@@ -438,9 +490,9 @@ def _postprocess(
                 "camera_group": clip.camera_group,
                 "segment_id": clip.segment_id,
                 "file": f"frames/{clip.camera_group}/{path.name}",
-                "src_pts": round(slot_frame.src_pts, 6),
-                "timeline_time_s": round(slot_frame.timeline_time, 6),
-                "sync_residual_s": round(slot_frame.residual, 6),
+                "src_pts": _round6(slot_frame.src_pts),
+                "timeline_time_s": _round6(slot_frame.timeline_time),
+                "sync_residual_s": _round6(slot_frame.residual),
                 "sync_suspect": slot_frame.suspect,
                 "w": width,
                 "h": height,
@@ -594,3 +646,233 @@ def _ffmpeg_version() -> str:
         return ffmpeg.version()
     except RuntimeError:
         return "missing"
+
+
+# -- photo ingest ------------------------------------------------------------
+#
+# The other way into the pipeline. Same output contract as video extraction, so
+# nothing downstream needs to know which branch ran.
+
+
+@dataclass(slots=True)
+class PhotoSlot:
+    """A photograph's place in the slot order.
+
+    Structurally a ``timeline.SlotFrame`` with the timing fields empty, so it goes
+    through ``_postprocess`` unchanged.
+    """
+
+    slot: int
+    src_pts: float | None = None
+    timeline_time: float | None = None
+    residual: float | None = None
+    suspect: bool = False
+
+
+def _photo_listing_digest(directory: Path) -> dict[str, Any]:
+    """Cheap content identity for a folder of photographs.
+
+    Runs on every stage page load, so it stats rather than hashes: name, size and
+    mtime catch every realistic edit -- a photo added, removed, replaced or
+    re-exported.
+    """
+    if not directory.is_dir():
+        return {"missing": True}
+    entries = []
+    total = 0
+    for entry in sorted(directory.iterdir(), key=lambda p: photo_scan.natural_key(p.name)):
+        if not entry.is_file() or entry.suffix.lower() not in photo_scan.PHOTO_SUFFIXES:
+            continue
+        stat = entry.stat()
+        entries.append([entry.name, stat.st_size, stat.st_mtime_ns])
+        total += stat.st_size
+    return {"count": len(entries), "bytes": total, "entries": entries}
+
+
+def _photo_probe(photo_set: photo_scan.PhotoSet) -> PhotoSetProbe:
+    first = photo_set.photos[0] if photo_set.photos else None
+    return PhotoSetProbe(
+        count=len(photo_set),
+        width=first.width if first else 0,
+        height=first.height if first else 0,
+        mixed_dimensions=photo_set.mixed_dimensions,
+        needs_reorientation=photo_set.needs_reorientation,
+        with_focal_length=photo_set.with_focal,
+        focal_mm=first.focal_mm if first else None,
+        focal_35mm=first.focal_35mm if first else None,
+        cameras=photo_set.cameras,
+        unsupported=photo_set.unsupported,
+        bytes_total=sum(p.bytes for p in photo_set.photos),
+    )
+
+
+def _ingest_one_photo(
+    photo: photo_scan.Photo, target: Path, params: ExtractParams
+) -> bool:
+    """Place one photograph at ``target``. Returns True if it had to be re-encoded.
+
+    Hardlinking is the preferred path and the common one: it is instantaneous, costs
+    no disk, and -- the reason it matters -- preserves EXIF byte for byte. COLMAP
+    seeds focal length from EXIF and otherwise guesses it from the image dimensions.
+    """
+    needs_rotation = photo.orientation not in (0, 1)
+    too_big = (
+        bool(params.max_dimension)
+        and max(photo.width, photo.height) > params.max_dimension
+    )
+    linkable = photo.path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+
+    if not needs_rotation and not too_big and linkable:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(photo.path, target)
+            return False
+        except OSError:
+            # Different volume, or a filesystem without hard links. A copy still
+            # preserves the bytes, and with them the EXIF.
+            shutil.copy2(photo.path, target)
+            return False
+
+    with Image.open(photo.path) as opened:
+        # Applies the EXIF rotation to the pixels and drops the tag, so nothing
+        # downstream can apply it a second time.
+        image = ImageOps.exif_transpose(opened)
+        if too_big:
+            image.thumbnail((params.max_dimension, params.max_dimension), Image.LANCZOS)
+        exif = image.info.get("exif")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.suffix == ".png":
+            image.save(target)
+        else:
+            # Quality 95 rather than the video path's qscale: this is a one-off
+            # re-encode of an original, not a frame pulled from an already-lossy clip.
+            extra = {"exif": exif} if exif else {}
+            image.convert("RGB").save(target, quality=95, subsampling=0, **extra)
+    return True
+
+
+def _run_photo_ingest(ctx: StageContext, params: ExtractParams) -> StageResult:
+    """Ingest folders of photographs into the standard frame layout."""
+    manifest = ctx.manifest
+    run_dir = ctx.run_dir
+    frames_scratch = ctx.scratch / "frames"
+    thumbs_scratch = ctx.scratch / "thumbs"
+
+    sets: dict[str, photo_scan.PhotoSet] = {}
+    for clip in manifest.enabled_clips():
+        photo_set = photo_scan.scan(Path(clip.source_path))
+        sets[clip.clip_id] = photo_set
+        clip.photos = _photo_probe(photo_set)
+        ctx.logger.info(
+            "%s: %d photographs in %s",
+            clip.camera_group,
+            len(photo_set),
+            clip.source_path,
+        )
+        for warning in photo_set.warnings:
+            ctx.logger.warning(warning)
+
+    total = sum(len(s) for s in sets.values())
+    if total == 0:
+        raise RuntimeError(
+            "no readable photographs found. Supported extensions: "
+            + ", ".join(sorted(photo_scan.PHOTO_SUFFIXES))
+        )
+
+    records: list[dict[str, Any]] = []
+    reencoded = 0
+    done = 0
+    slot_base = 0
+
+    for clip in manifest.enabled_clips():
+        photo_set = sets[clip.clip_id]
+        out_dir = frames_scratch / clip.camera_group
+        slots: list[PhotoSlot] = []
+        produced: list[Path] = []
+
+        for offset, photo in enumerate(photo_set.photos):
+            ctx.progress(f"ingesting {clip.camera_group}", current=done, total=total)
+            slot = slot_base + offset
+            suffix = ".png" if photo.path.suffix.lower() == ".png" else ".jpg"
+            target = out_dir / f"{slot:06d}{suffix}"
+            if _ingest_one_photo(photo, target, params):
+                reencoded += 1
+            slots.append(PhotoSlot(slot=slot))
+            produced.append(target)
+            done += 1
+
+        records.extend(
+            _postprocess(
+                ctx, clip, slots, produced, params, thumbs_scratch / clip.camera_group
+            )
+        )
+
+        # A separate photo set is a separate pass with its own disjoint block of slot
+        # indices, exactly as a SINGLE video segment is.
+        segment = manifest.segment(clip.segment_id)
+        if segment is not None:
+            segment.slot_base = slot_base
+            segment.slot_count = len(photo_set)
+        slot_base += len(photo_set)
+
+    ctx.progress("committing", current=total, total=total)
+    _commit(run_dir, frames_scratch, thumbs_scratch)
+    _write_frame_records(run_dir, records)
+
+    metrics, warnings = _summarise_photos(manifest, sets, records, reencoded)
+    # Photographs have an order but no clock: no fps, no start and end, no sync.
+    manifest.timeline = TimelineSummary(total_slots=total)
+
+    return StageResult(
+        artifacts={
+            "frames": "frames",
+            "thumbs": "thumbs",
+            "frames_index": "frames/frames.jsonl",
+        },
+        metrics=metrics,
+        warnings=warnings,
+        tool_versions={},
+    )
+
+
+def _summarise_photos(
+    manifest: RunManifest,
+    sets: dict[str, photo_scan.PhotoSet],
+    records: list[dict[str, Any]],
+    reencoded: int,
+) -> tuple[dict[str, Any], list[str]]:
+    lumas = [r["mean_luma"] for r in records]
+    duplicates = sum(1 for r in records if r["duplicate_of"] is not None)
+    luma_range = (max(lumas) - min(lumas)) if lumas else 0.0
+
+    metrics: dict[str, Any] = {
+        "source": "photos",
+        "frame_count": len(records),
+        "slot_count": len(records),
+        "segment_count": len({r["segment_id"] for r in records}),
+        "camera_groups": manifest.camera_groups(),
+        "duplicates": duplicates,
+        "reencoded": reencoded,
+        "hardlinked": len(records) - reencoded,
+        "mean_luma_range": round(luma_range, 4),
+        "bytes_on_disk": sum(r["bytes"] for r in records),
+        "with_exif_focal": sum(s.with_focal for s in sets.values()),
+    }
+
+    warnings: list[str] = []
+    for photo_set in sets.values():
+        warnings.extend(photo_set.warnings)
+
+    if duplicates:
+        percent = round(100 * duplicates / max(1, len(records)))
+        warnings.append(
+            f"{duplicates} near-identical photographs ({percent}%). Two views with no "
+            "baseline between them have nothing to triangulate; selection will drop "
+            "them."
+        )
+    if luma_range > LUMA_RANGE_WARN:
+        warnings.append(
+            f"brightness varies by {round(luma_range * 100)}% across the set, which "
+            "means exposure was not locked. Expect visible seams in the final texture."
+        )
+    return metrics, warnings

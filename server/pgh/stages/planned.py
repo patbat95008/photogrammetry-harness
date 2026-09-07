@@ -24,22 +24,6 @@ class PlannedStage:
 
 
 PLANNED: dict[StageId, PlannedStage] = {
-    StageId.SELECT: PlannedStage(
-        label="Select frames",
-        summary="Whittle thousands of extracted frames down to the few hundred worth reconstructing.",
-        plan=[
-            "Score sharpness per frame (variance of Laplacian), restricted to the "
-            "subject region rather than the whole image.",
-            "Drop the near-identical frames already flagged during extraction: two "
-            "views with no baseline between them have nothing to triangulate.",
-            "Keep angular coverage even, so no part of the orbit is over- or "
-            "under-represented.",
-            "Prefer neutral frames -- eyes open, mouth closed -- since expression "
-            "changes violate the rigid-scene assumption.",
-            "Present a contact sheet with accept/reject and a reason per frame, with "
-            "manual overrides folded into the stage fingerprint.",
-        ],
-    ),
     StageId.MASK: PlannedStage(
         label="Mask",
         summary="Mark which pixels belong to the subject and which must be ignored.",
@@ -67,45 +51,6 @@ PLANNED: dict[StageId, PlannedStage] = {
                 "excluded from the final mesh."
             ),
         },
-    ),
-    StageId.SPARSE: PlannedStage(
-        label="Align",
-        summary="Work out where each camera was, and recover a sparse point cloud.",
-        plan=[
-            "Build a hardlink farm of just the selected frames, preserving the "
-            "per-camera folder layout so COLMAP assigns one intrinsic per camera.",
-            "Extract and match features on the GPU, using sequential matching with "
-            "loop detection to close the orbit.",
-            "Run the mapper, then report which images failed to register.",
-            "Show the sparse cloud with camera frusta, so a mis-registered view is "
-            "visible rather than merely tabulated.",
-        ],
-        conditional={
-            CaptureMode.SUBJECT_ROTATES: (
-                "Two cameras on fixed mounts hold a constant relative pose in the "
-                "subject's own reference frame, which is a rigid two-sensor rig. "
-                "Declaring it constrains bundle adjustment hard and helps the loop "
-                "close. This is why extraction names frames by shared timeline slot."
-            ),
-            CaptureMode.CAMERA_ORBITS: (
-                "Handheld cameras do not hold a constant relative pose, so no rig will "
-                "be declared here -- the two clips are solved as independent cameras."
-            ),
-        },
-    ),
-    StageId.DENSE: PlannedStage(
-        label="Dense cloud",
-        summary="Turn the sparse points and known camera poses into a dense surface sampling.",
-        plan=[
-            "Undistort the selected images -- and, separately, the masks, since COLMAP "
-            "does not undistort masks and OpenMVS consumes undistorted images.",
-            "Hand the scene to OpenMVS DensifyPointCloud, or COLMAP's own patch-match "
-            "stereo, selectable per run.",
-            "Expose resolution level prominently: this stage exhausts system RAM long "
-            "before it troubles the GPU.",
-            "Offer to delete the depth maps after fusion -- they are most of the tens "
-            "of gigabytes a run consumes, and are never needed again.",
-        ],
     ),
     StageId.MESH: PlannedStage(
         label="Mesh",

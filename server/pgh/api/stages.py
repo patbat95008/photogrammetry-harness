@@ -10,13 +10,21 @@ from pydantic import ValidationError
 
 from ..fingerprint import evaluate
 from ..jobs import runner
-from ..manifest import StageId
+from ..manifest import StageId, StageState
 from ..stages.planned import planned_for
 from ..stages.registry import registry
 from ..store import RunHandle
 from .deps import get_run
 
 router = APIRouter(prefix="/api/runs/{run_id}/stages", tags=["stages"])
+
+#: Stages that may be deliberately skipped, leaving everything downstream runnable.
+#: Only masking, and only because the capture mode genuinely decides it: when the
+#: cameras orbit a still subject the background is rigid with the subject, so masking
+#: it out discards features that help the orbit close. Gated on this set rather than
+#: on a Stage attribute because mask is not implemented yet -- registry.get() returns
+#: None for it, and it still has to be skippable.
+SKIPPABLE: set[StageId] = {StageId.MASK}
 
 
 def _stage_id(stage_id: str) -> StageId:
@@ -47,6 +55,7 @@ def get_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any
         "stale_reason": evaluation.stale_reason,
         "blocked_by": [b.value for b in evaluation.blocked_by],
         "runnable": evaluation.runnable,
+        "skippable": sid in SKIPPABLE,
         "preflight": stage.preflight(manifest) if stage else [],
         "planned": None if stage else planned_for(sid, manifest),
     }
@@ -101,6 +110,47 @@ def run_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return job.to_dict()
+
+
+@router.post("/{stage_id}/skip")
+def skip_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any]:
+    """Mark a stage as deliberately not run, unblocking its dependents."""
+    sid = _stage_id(stage_id)
+    if sid not in SKIPPABLE:
+        raise HTTPException(status_code=400, detail=f"{stage_id} cannot be skipped")
+
+    def mutate(manifest):
+        record = manifest.stages[sid]
+        record.state = StageState.SKIPPED
+        record.fingerprint = None
+        record.error = None
+        record.stale_reason = None
+        record.artifacts = {}
+        record.metrics = {}
+        record.warnings = []
+
+    run.update(mutate)
+    return _skip_response(run, sid, skipped=True)
+
+
+@router.post("/{stage_id}/unskip")
+def unskip_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any]:
+    """Undo a skip, returning the stage to pending."""
+    sid = _stage_id(stage_id)
+    manifest = run.load()
+    if manifest.stages[sid].state is not StageState.SKIPPED:
+        raise HTTPException(status_code=409, detail=f"{stage_id} is not skipped")
+
+    run.update(lambda m: setattr(m.stages[sid], "state", StageState.PENDING))
+    return _skip_response(run, sid, skipped=False)
+
+
+def _skip_response(run: RunHandle, sid: StageId, *, skipped: bool) -> dict[str, Any]:
+    """Publish the new staleness map and hand it back in the same shape as params."""
+    evaluations = evaluate(run.load(), registry)
+    states = {s.value: e.state.value for s, e in evaluations.items()}
+    run.bus.publish("stage.skipped", stage=sid.value, skipped=skipped, states=states)
+    return {"stage_id": sid.value, "skipped": skipped, "states": states}
 
 
 @router.post("/{stage_id}/cancel")

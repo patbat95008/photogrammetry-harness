@@ -67,6 +67,7 @@ export const api = {
       camera_group: string;
       segment_id: string;
       segment_kind?: "rig" | "single" | "independent";
+      kind?: "video" | "photos";
     },
   ) => request<unknown>(`/api/runs/${runId}/clips`, { method: "POST", json: body }),
   updateClip: (

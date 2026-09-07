@@ -1,15 +1,25 @@
 import { NavLink, Navigate, Route, Routes, useParams } from "react-router-dom";
 import ClipsPage from "./components/ClipsPage";
+import DensePage from "./components/DensePage";
 import DoctorPage from "./components/DoctorPage";
 import ExtractPage from "./components/ExtractPage";
 import RunsPage from "./components/RunsPage";
+import SelectPage from "./components/SelectPage";
+import SparsePage from "./components/SparsePage";
 import StageStub from "./components/StageStub";
 
 /**
- * The seven pipeline stages, in DAG order. Only `extract` becomes real at M5;
- * the rest render as stubs inside the same shell so the shape of the pipeline is
- * visible from the start.
+ * The seven pipeline stages, in DAG order. Those with a page of their own are listed
+ * in BUILT_STAGES below; the rest render as stubs inside the same shell so the shape
+ * of the pipeline stays visible from the start.
  */
+const BUILT_STAGES: Record<string, () => JSX.Element | null> = {
+  extract: ExtractPage,
+  select: SelectPage,
+  sparse: SparsePage,
+  dense: DensePage,
+};
+
 const STAGES = [
   { id: "extract", label: "Extract frames" },
   { id: "select", label: "Select frames" },
@@ -107,15 +117,18 @@ export default function App() {
           </Shell>
         }
       />
-      <Route
-        path="/runs/:runId/stages/extract"
-        element={
-          <Shell>
-            <ExtractPage />
-          </Shell>
-        }
-      />
-      {STAGES.filter((s) => s.id !== "extract").map((stage) => (
+      {Object.entries(BUILT_STAGES).map(([id, Page]) => (
+        <Route
+          key={id}
+          path={`/runs/:runId/stages/${id}`}
+          element={
+            <Shell>
+              <Page />
+            </Shell>
+          }
+        />
+      ))}
+      {STAGES.filter((s) => !(s.id in BUILT_STAGES)).map((stage) => (
         <Route
           key={stage.id}
           path={`/runs/:runId/stages/${stage.id}`}

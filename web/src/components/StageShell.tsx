@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useEventStream } from "../hooks/useEventStream";
 
-interface StageDetail {
+export interface StageDetail {
   stage_id: string;
   label: string;
   description: string;
@@ -21,6 +21,7 @@ interface StageDetail {
   stale_reason: string | null;
   blocked_by: string[];
   runnable: boolean;
+  skippable?: boolean;
   preflight: string[];
 }
 
@@ -40,6 +41,12 @@ interface SchemaProp {
   minimum?: number;
   maximum?: number;
   exclusiveMinimum?: number;
+  /**
+   * Set by a stage that renders this parameter itself. There is no generic widget
+   * for a mapping or a list, and without this such a field falls through to a text
+   * input that silently destroys its value the moment the form is saved.
+   */
+  widget?: string;
 }
 
 /** Resolve the enum options a property allows, following $ref into $defs. */
@@ -78,6 +85,7 @@ function ParamsForm({
   return (
     <div className="params-grid">
       {Object.entries(schema.properties ?? {}).map(([key, prop]) => {
+        if (prop.widget === "hidden") return null;
         const options = enumOptions(prop, schema);
         const value = values[key];
         return (
@@ -131,6 +139,7 @@ const STATE_LABEL: Record<string, string> = {
   running: "Running",
   failed: "Failed",
   cancelled: "Cancelled",
+  skipped: "Skipped",
 };
 
 const STALE_EXPLANATION: Record<string, string> = {
@@ -146,7 +155,7 @@ export default function StageShell({
   runId: string;
   stageId: string;
   /** Rendered below the shell once the stage has results. */
-  children?: (detail: StageDetail) => React.ReactNode;
+  children?: (detail: StageDetail, reload: () => Promise<void>) => React.ReactNode;
 }) {
   const [detail, setDetail] = useState<StageDetail | null>(null);
   const [params, setParams] = useState<Record<string, unknown>>({});
@@ -388,7 +397,7 @@ export default function StageShell({
         </div>
       )}
 
-      {children?.(detail)}
+      {children?.(detail, load)}
     </div>
   );
 }

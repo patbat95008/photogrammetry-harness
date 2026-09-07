@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .manifest import RunManifest, StageId, StageRecord, StageState
 
@@ -66,11 +66,26 @@ def fingerprint_fields(model: type[BaseModel]) -> set[str]:
 
 
 def filter_params(model: type[BaseModel] | None, params: dict[str, Any]) -> dict[str, Any]:
-    """Drop the cosmetic params before hashing."""
+    """Fill in the defaults, then drop the cosmetic params, before hashing.
+
+    Normalising through the model is what makes an omitted parameter and an
+    explicitly-defaulted one hash alike. A stage run before anyone opened its page
+    stores ``{}``; the moment the UI saves that same form it stores every field. Both
+    describe the same run, so hashing the raw dict would mean that merely pressing
+    Save invalidated every finished stage downstream -- hours of reconstruction
+    thrown away for a change that was not one.
+    """
     if model is None:
         return dict(params)
     keep = fingerprint_fields(model)
-    return {k: v for k, v in params.items() if k in keep}
+    try:
+        normalised = model.model_validate(params or {}).model_dump(mode="json")
+    except ValidationError:
+        # A stored value this model no longer accepts. Hash what is actually there
+        # rather than raising: this runs on every page load, and the stage will be
+        # re-stamped anyway the next time it runs.
+        normalised = dict(params)
+    return {k: v for k, v in normalised.items() if k in keep}
 
 
 class StageResolver(Protocol):
@@ -194,12 +209,14 @@ def evaluate(
         record = manifest.stages.get(stage_id) or StageRecord()
         fingerprint = computed[stage_id]
 
-        # A stage can only run once every dependency has completed successfully.
+        # A stage can only run once every dependency has completed successfully --
+        # or been explicitly skipped, which is a decision about the run, not an
+        # omission. Masking is the motivating case; see StageState.SKIPPED.
         blocked_by = [
             dep
             for dep in resolver.dependencies(stage_id)
             if (manifest.stages.get(dep) or StageRecord()).state
-            not in (StageState.DONE, StageState.STALE)
+            not in (StageState.DONE, StageState.STALE, StageState.SKIPPED)
         ]
 
         if record.state is StageState.RUNNING:

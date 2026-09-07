@@ -187,6 +187,6 @@ export interface SyncResults {
 export interface BrowseResult {
   path: string | null;
   parent: string | null;
-  directories: { name: string; path: string }[];
+  directories: { name: string; path: string; photo_count?: number }[];
   files: { name: string; path: string; size_bytes: number }[];
 }

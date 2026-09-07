@@ -68,6 +68,24 @@ class StageState(StrEnum):
     STALE = "stale"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    #: Deliberately not run, and treated as satisfied by everything downstream.
+    #: Masking is the motivating case: in CAMERA_ORBITS the background is rigid
+    #: with the subject, so masking it out throws away good features. Skipping is
+    #: a real decision about the run, so it is recorded rather than inferred.
+    SKIPPED = "skipped"
+
+
+class SourceKind(StrEnum):
+    """What a clip actually is on disk.
+
+    A run is one or the other, never both: the shared slot clock that pairs frames
+    across cameras is derived from video timestamps, and a folder of photographs has
+    no timestamps to derive it from. Mixing them would leave half the timeline
+    defined and half of it invented.
+    """
+
+    VIDEO = "video"
+    PHOTOS = "photos"
 
 
 class CaptureMode(StrEnum):
@@ -144,6 +162,24 @@ class ClipProbe(BaseModel):
     packets_path: str | None = None
 
 
+class PhotoSetProbe(BaseModel):
+    """What a folder of stills turned out to contain."""
+
+    count: int = 0
+    width: int = 0
+    height: int = 0
+    mixed_dimensions: bool = False
+    #: EXIF orientation values present. Anything but {1} means images get rotated.
+    needs_reorientation: bool = False
+    #: How many carry an EXIF focal length. COLMAP guesses for the rest.
+    with_focal_length: int = 0
+    focal_mm: float | None = None
+    focal_35mm: float | None = None
+    cameras: list[str] = Field(default_factory=list)
+    unsupported: list[str] = Field(default_factory=list)
+    bytes_total: int = 0
+
+
 class Clip(BaseModel):
     clip_id: str
     #: One folder of frames, one COLMAP camera. Two clips from the same physical
@@ -152,8 +188,12 @@ class Clip(BaseModel):
     role: str = "cam"
     segment_id: str = "seg0"
     source_path: str
+    #: Whether source_path names a video file or a directory of photographs.
+    kind: SourceKind = SourceKind.VIDEO
     source_identity: SourceIdentity | None = None
     probe: ClipProbe = Field(default_factory=ClipProbe)
+    #: Set only when kind is PHOTOS; probe stays at its defaults in that case.
+    photos: PhotoSetProbe | None = None
     #: Added to this clip's PTS to place it on the shared run timeline.
     time_offset_s: float = 0.0
     sync_confidence: float | None = None

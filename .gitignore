@@ -74,6 +74,10 @@ yarn-error.log*
 # --- machine-local configuration --------------------------------------------
 # Tool path overrides and runs_root. Machine-specific by design.
 /data/tools.local.toml
+
+# COLMAP vocabulary tree for loop detection, fetched by scripts/fetch-vocab-tree.ps1.
+# 15 MB, reproducible, and currently unusable anyway -- see HANDOVER 6.11.
+/data/*.bin
 .env
 .env.local
 

@@ -314,3 +314,178 @@ def test_apply_evaluation_writes_state_back(manifest, registry):
     assert manifest.stages[StageId.EXTRACT].state is StageState.STALE
     assert manifest.stages[StageId.MASK].state is StageState.STALE
     assert manifest.stages[StageId.MASK].stale_reason == "upstream"
+
+
+# -- skipping ----------------------------------------------------------------
+#
+# Masking is optional when the cameras orbit a still subject: the background is
+# rigid with the subject, so masking it out throws away features that help the orbit
+# close. Skipping is therefore a decision about the run, and dependents have to treat
+# it as satisfied -- otherwise the align stage is simply unreachable.
+
+
+class FakeSparse(Stage):
+    """Stands in for the align stage, whose real dependency edge is the awkward one."""
+
+    id = StageId.SPARSE
+    label = "Align"
+    depends_on = [StageId.SELECT, StageId.MASK]
+
+    def external_inputs(self, manifest: RunManifest) -> dict[str, Any]:
+        # Mirrors the real stage: whether masks exist is an input in its own right,
+        # because the mask stage's fingerprint is identical whether it ran or was
+        # skipped -- it hashes params and inputs, not outcome.
+        mask = manifest.stages[StageId.MASK]
+        return {
+            "masks": (
+                "none"
+                if mask.state is StageState.SKIPPED
+                else mask.artifacts.get("masks", "none")
+            )
+        }
+
+    def run(self, ctx):  # pragma: no cover
+        return StageResult()
+
+
+@pytest.fixture
+def registry_with_sparse(registry: StageRegistry) -> StageRegistry:
+    registry.register(FakeSparse())
+    return registry
+
+
+def blocked(manifest: RunManifest, registry: StageRegistry, stage_id: StageId) -> list[StageId]:
+    return evaluate(manifest, registry)[stage_id].blocked_by
+
+
+def test_a_pending_mask_blocks_align(manifest, registry_with_sparse):
+    """The situation that makes SKIPPED necessary rather than merely tidy."""
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    assert blocked(manifest, registry_with_sparse, StageId.SPARSE) == [StageId.MASK]
+    assert not evaluate(manifest, registry_with_sparse)[StageId.SPARSE].runnable
+
+
+def test_skipping_the_mask_unblocks_align(manifest, registry_with_sparse):
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+
+    assert blocked(manifest, registry_with_sparse, StageId.SPARSE) == []
+    assert evaluate(manifest, registry_with_sparse)[StageId.SPARSE].runnable
+
+
+def test_a_skipped_stage_stays_skipped(manifest, registry_with_sparse):
+    """Evaluation must not quietly reinterpret the state as pending or done."""
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+    assert states(manifest, registry_with_sparse)[StageId.MASK] is StageState.SKIPPED
+
+
+def test_failed_and_cancelled_still_block(manifest, registry_with_sparse):
+    """Only an explicit skip counts; a stage that fell over is not satisfied."""
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    for state in (StageState.FAILED, StageState.CANCELLED, StageState.PENDING):
+        manifest.stages[StageId.MASK].state = state
+        assert blocked(manifest, registry_with_sparse, StageId.SPARSE) == [StageId.MASK], state
+
+
+def test_unskipping_blocks_align_again(manifest, registry_with_sparse):
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+    assert blocked(manifest, registry_with_sparse, StageId.SPARSE) == []
+
+    manifest.stages[StageId.MASK].state = StageState.PENDING
+    assert blocked(manifest, registry_with_sparse, StageId.SPARSE) == [StageId.MASK]
+
+
+def test_running_align_over_a_skipped_mask_goes_stale_when_masks_arrive(
+    manifest, registry_with_sparse
+):
+    """The easy bug: the mask stage's own fingerprint does not change when it runs.
+
+    It hashes params, external inputs and upstream fingerprints, all of which are the
+    same whether the stage was skipped or executed. Without align declaring mask
+    availability as one of *its* inputs, producing masks would leave a
+    background-including reconstruction looking perfectly fresh.
+    """
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+    mark_done(manifest, registry_with_sparse, StageId.SPARSE)
+    assert states(manifest, registry_with_sparse)[StageId.SPARSE] is StageState.DONE
+
+    # Now masking actually runs and produces something.
+    manifest.stages[StageId.MASK].state = StageState.DONE
+    manifest.stages[StageId.MASK].artifacts = {"masks": "masks"}
+    manifest.stages[StageId.MASK].fingerprint = compute_fingerprints(
+        manifest, registry_with_sparse
+    )[StageId.MASK]
+
+    assert states(manifest, registry_with_sparse)[StageId.SPARSE] is StageState.STALE, (
+        "align must go stale when masks appear, or it silently keeps a model built "
+        "from the unmasked images"
+    )
+
+
+def test_skipping_again_restores_the_earlier_fingerprint(manifest, registry_with_sparse):
+    """Content-derived, not a counter: skip, unskip, skip must be back where it began."""
+    mark_done(manifest, registry_with_sparse, StageId.EXTRACT, StageId.SELECT)
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+    original = compute_fingerprints(manifest, registry_with_sparse)
+
+    manifest.stages[StageId.MASK].state = StageState.DONE
+    manifest.stages[StageId.MASK].artifacts = {"masks": "masks"}
+    assert compute_fingerprints(manifest, registry_with_sparse) != original
+
+    manifest.stages[StageId.MASK].state = StageState.SKIPPED
+    manifest.stages[StageId.MASK].artifacts = {}
+    assert compute_fingerprints(manifest, registry_with_sparse) == original
+
+
+# -- params normalisation ----------------------------------------------------
+
+
+def test_omitted_params_hash_like_explicit_defaults(manifest, registry):
+    """Opening a stage page and pressing Save must not invalidate anything.
+
+    A stage run before anyone touched its form stores {}; the UI then saves every
+    field explicitly. Both describe the same run. Hashing the raw dict would make
+    that Save throw away every finished stage downstream.
+    """
+    manifest.stages[StageId.SELECT].params = {}
+    with_nothing = compute_fingerprints(manifest, registry)
+
+    manifest.stages[StageId.SELECT].params = SelectLikeParams().model_dump()
+    with_defaults = compute_fingerprints(manifest, registry)
+
+    assert with_nothing == with_defaults
+
+
+def test_a_partial_params_dict_hashes_like_the_full_one(manifest, registry):
+    """Adding a parameter to a model must not invalidate runs that predate it."""
+    manifest.stages[StageId.EXTRACT].params = {"fps": 6.0}
+    partial = compute_fingerprints(manifest, registry)
+
+    manifest.stages[StageId.EXTRACT].params = ExtractLikeParams(fps=6.0).model_dump()
+    full = compute_fingerprints(manifest, registry)
+
+    assert partial == full
+
+
+def test_a_real_change_still_invalidates(manifest, registry):
+    """The normalisation must not blunt the thing the engine exists to do."""
+    manifest.stages[StageId.EXTRACT].params = {}
+    before = compute_fingerprints(manifest, registry)
+    manifest.stages[StageId.EXTRACT].params = {"fps": 12.0}
+    assert compute_fingerprints(manifest, registry) != before
+
+
+def test_unparseable_stored_params_do_not_raise(manifest, registry):
+    """This runs on every page load; a bad stored value must not break the page."""
+    manifest.stages[StageId.EXTRACT].params = {"fps": "not a number"}
+    assert compute_fingerprints(manifest, registry)  # no exception
+
+
+def test_cosmetic_params_stay_cosmetic_after_normalisation(manifest, registry):
+    manifest.stages[StageId.EXTRACT].params = {}
+    before = compute_fingerprints(manifest, registry)
+    manifest.stages[StageId.EXTRACT].params = {"thumbnail_px": 512}
+    assert compute_fingerprints(manifest, registry) == before

@@ -1,4 +1,4 @@
-"""Clip ingest: add a source video by server-side path, probe it, show a poster."""
+"""Clip ingest: add a source video or photo set by server-side path, and probe it."""
 
 from __future__ import annotations
 
@@ -10,8 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from .. import photos as photo_scan
 from ..files import is_within_ingest_roots, source_identity
-from ..manifest import Clip, RunManifest, Segment, SegmentKind
+from ..manifest import (
+    Clip,
+    PhotoSetProbe,
+    RunManifest,
+    Segment,
+    SegmentKind,
+    SourceKind,
+)
 from ..store import RunHandle, slugify
 from ..vendor import ffmpeg
 from .deps import get_run
@@ -23,6 +31,9 @@ class AddClipRequest(BaseModel):
     #: An absolute path on this machine. Not an upload: these files are multi-GB,
     #: and pushing one through the browser to a server on the same disk is absurd.
     source_path: str
+    #: A video file, or a directory of photographs. Left unset it is inferred from
+    #: whether source_path names a file or a folder, which is what the UI relies on.
+    kind: SourceKind | None = None
     role: str = "cam"
     camera_group: str = ""
     segment_id: str = "seg0"
@@ -43,13 +54,21 @@ def add_clip(body: AddClipRequest, run: RunHandle = Depends(get_run)) -> dict[st
     source = Path(body.source_path)
     if not source.is_absolute():
         raise HTTPException(status_code=400, detail="source_path must be absolute")
-    if not source.exists() or not source.is_file():
-        raise HTTPException(status_code=404, detail=f"no such file: {source}")
+    if not source.exists():
+        raise HTTPException(status_code=404, detail=f"no such path: {source}")
     if not is_within_ingest_roots(source):
         raise HTTPException(
             status_code=403,
-            detail="file is outside the configured ingest roots",
+            detail="path is outside the configured ingest roots",
         )
+
+    kind = body.kind or (
+        SourceKind.PHOTOS if source.is_dir() else SourceKind.VIDEO
+    )
+    if kind is SourceKind.PHOTOS:
+        return _add_photo_set(body, source, run)
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail=f"not a file: {source}")
 
     probe_dir = run.path("probe")
     probe_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +116,83 @@ def add_clip(body: AddClipRequest, run: RunHandle = Depends(get_run)) -> dict[st
     run.update(mutate)
 
     _make_poster(run, clip)
+    run.bus.publish("clip.added", clip_id=clip.clip_id)
+    return clip.model_dump(mode="json")
+
+
+def _add_photo_set(
+    body: AddClipRequest, source: Path, run: RunHandle
+) -> dict[str, Any]:
+    """Register a folder of photographs as a clip.
+
+    Deliberately not probed with ffprobe: there is no container, no timeline and no
+    audio to sync against. What matters instead is how many images there are, whether
+    they agree on size, and whether EXIF survived -- so that is what gets recorded.
+    """
+    photo_set = photo_scan.scan(source)
+    if not photo_set.photos:
+        detail = f"no readable photographs in {source}"
+        if photo_set.unsupported:
+            detail += (
+                f" ({len(photo_set.unsupported)} file(s) need a decoder that is not "
+                "installed -- export RAW or HEIC to JPEG first)"
+            )
+        raise HTTPException(status_code=422, detail=detail)
+
+    manifest = run.load()
+    clip_id = _unique_clip_id(manifest, body.role or source.name)
+    first = photo_set.photos[0]
+
+    clip = Clip(
+        clip_id=clip_id,
+        camera_group=slugify(body.camera_group) or clip_id,
+        role=body.role,
+        segment_id=body.segment_id,
+        source_path=str(source),
+        kind=SourceKind.PHOTOS,
+        photos=PhotoSetProbe(
+            count=len(photo_set),
+            width=first.width,
+            height=first.height,
+            mixed_dimensions=photo_set.mixed_dimensions,
+            needs_reorientation=photo_set.needs_reorientation,
+            with_focal_length=photo_set.with_focal,
+            focal_mm=first.focal_mm,
+            focal_35mm=first.focal_35mm,
+            cameras=photo_set.cameras,
+            unsupported=photo_set.unsupported,
+            bytes_total=sum(p.bytes for p in photo_set.photos),
+        ),
+    )
+
+    def mutate(m: RunManifest) -> None:
+        m.clips.append(clip)
+        segment = m.segment(body.segment_id)
+        if segment is None:
+            segment = Segment(
+                segment_id=body.segment_id,
+                label=body.segment_label or body.segment_id,
+                # A photo set is one pass by one camera, whatever the caller said:
+                # there is no shared clock to make it simultaneous with anything.
+                kind=SegmentKind.SINGLE,
+            )
+            m.segments.append(segment)
+        segment.clip_ids.append(clip.clip_id)
+
+    run.update(mutate)
+
+    poster = run.path("probe", f"{clip_id}.poster.jpg")
+    poster.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(first.path) as image:
+            upright = ImageOps.exif_transpose(image).convert("RGB")
+            upright.thumbnail((960, 960))
+            upright.save(poster, quality=85)
+    except Exception:  # a missing poster is cosmetic, never worth failing an add
+        pass
+
     run.bus.publish("clip.added", clip_id=clip.clip_id)
     return clip.model_dump(mode="json")
 
