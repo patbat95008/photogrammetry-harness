@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,26 @@ def test_handheld_orbit_does_not_require_masking(run_store):
 
     note = planned_for(StageId.MASK, manifest)["note"]
     assert "OPTIONAL" in note
+
+
+def test_orientation_flip_survives_a_reload(run_store):
+    """The viewer's flip is read back on the next visit and by the export stage."""
+    run = run_store.create("upside down")
+    assert run.load().capture.flip_x, "COLMAP's frame is arbitrary; default to flipping"
+
+    run.update(lambda m: setattr(m.capture, "flip_x", False))
+
+    assert run_store.get(run.run_id).io.load().capture.flip_x is False
+
+
+def test_a_manifest_written_before_the_flip_existed_still_loads(run_store):
+    """Adding the field must not strand runs made before it."""
+    run = run_store.create("older")
+    raw = json.loads((run.dir / "project.json").read_text(encoding="utf-8"))
+    del raw["capture"]["flip_x"]
+    (run.dir / "project.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    assert run_store.get(run.run_id).io.load().capture.flip_x is True
 
 
 def test_only_fixed_mounts_support_a_rig():

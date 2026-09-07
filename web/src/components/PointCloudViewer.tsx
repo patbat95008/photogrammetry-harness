@@ -229,10 +229,13 @@ function Trajectory({ poses }: { poses: PoseImage[] }) {
 export default function PointCloudViewer({
   cloudUrl,
   posesUrl,
+  runId,
   height = 460,
 }: {
   cloudUrl: string;
   posesUrl?: string;
+  /** Enables the flip toggle to persist against the run. Without it, it is view-only. */
+  runId?: string;
   height?: number;
 }) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
@@ -242,6 +245,16 @@ export default function PointCloudViewer({
   const [pointSize, setPointSize] = useState(1.6);
   const [showFrusta, setShowFrusta] = useState(true);
   const [dark, setDark] = useState(true);
+  /**
+   * Whether to stand the model up.
+   *
+   * COLMAP's world frame is arbitrary and every capture so far has come out inverted,
+   * so this starts on -- and starts on before the run has answered, so the first paint
+   * is already the right way up rather than flipping under the viewer a moment later.
+   * The toggle exists because the sign is genuinely ambiguous: the axis is recoverable
+   * from the plane the cameras lie in, its direction is not.
+   */
+  const [flipped, setFlipped] = useState(true);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -313,6 +326,43 @@ export default function PointCloudViewer({
     };
   }, [posesUrl]);
 
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    fetch(`/api/runs/${runId}/orientation`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data: { flip_x: boolean }) => {
+        if (!cancelled) setFlipped(data.flip_x);
+      })
+      .catch(() => {
+        /* the default is the answer for every run so far; show it and carry on */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  /**
+   * Apply the flip at once, then record it.
+   *
+   * Optimistic because the toggle has to feel immediate, but reverted if the write
+   * fails: this setting is read back on the next visit and by the export stage, so a
+   * checkbox that quietly did not persist would be a lie about the exported model.
+   */
+  function toggleFlip(next: boolean) {
+    setFlipped(next);
+    if (!runId) return;
+    fetch(`/api/runs/${runId}/orientation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flip_x: next }),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+      })
+      .catch(() => setFlipped(!next));
+  }
+
   useEffect(() => () => geometry?.dispose(), [geometry]);
 
   const extent = useMemo(() => {
@@ -326,6 +376,24 @@ export default function PointCloudViewer({
   const target = useMemo(
     () => extent?.centre ?? ([0, 0, 0] as [number, number, number]),
     [extent],
+  );
+
+  /**
+   * The flip, as a rotation about the cloud's centre rather than the world origin.
+   *
+   * Turning the model about its own centre leaves that centre a fixed point, so the
+   * framing above and the OrbitControls target below stay correct and toggling turns
+   * the model in place instead of swinging it out of frame. Memoised for the same
+   * reason as everything else here: a fresh array per render restarts the scene graph
+   * node it is applied to.
+   */
+  const flipRotation = useMemo<[number, number, number]>(
+    () => (flipped ? [Math.PI, 0, 0] : [0, 0, 0]),
+    [flipped],
+  );
+  const negTarget = useMemo<[number, number, number]>(
+    () => [-target[0], -target[1], -target[2]],
+    [target],
   );
 
   const pointCount = geometry?.getAttribute("position")?.count ?? 0;
@@ -360,6 +428,17 @@ export default function PointCloudViewer({
             Cameras
           </label>
         )}
+        <label
+          className="cloud-control"
+          title="Turn the model over. Saved with the run, and used when it is exported."
+        >
+          <input
+            type="checkbox"
+            checked={flipped}
+            onChange={(e) => toggleFlip(e.target.checked)}
+          />
+          Flip
+        </label>
         <label className="cloud-control">
           <input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} />
           Dark
@@ -373,13 +452,23 @@ export default function PointCloudViewer({
           <Canvas camera={CAMERA} gl={GL}>
             <color attach="background" args={[dark ? "#12161c" : "#eef1f5"]} />
             <FitToCloud extent={extent} />
-            <Cloud geometry={geometry} pointSize={pointSize} />
-            {showFrusta && poses.length > 0 && (
-              <>
-                <Frusta poses={poses} scale={sceneRadius * 0.08} highlightWeak />
-                <Trajectory poses={poses} />
-              </>
-            )}
+            {/*
+              Cameras turn with the cloud: they are a claim about where each shot was
+              taken from in this model, and are only true of it in the same frame.
+              The group stays mounted in both states, so toggling costs a matrix
+              update rather than a remount of a million-point geometry.
+            */}
+            <group position={target} rotation={flipRotation}>
+              <group position={negTarget}>
+                <Cloud geometry={geometry} pointSize={pointSize} />
+                {showFrusta && poses.length > 0 && (
+                  <>
+                    <Frusta poses={poses} scale={sceneRadius * 0.08} highlightWeak />
+                    <Trajectory poses={poses} />
+                  </>
+                )}
+              </group>
+            </group>
             {/*
               The target must be the cloud's centre. OrbitControls drives the camera
               every frame from its own target, which defaults to the origin -- so

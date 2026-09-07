@@ -149,6 +149,7 @@ export interface RunManifest {
     revolutions: number | null;
     scale_reference_note: string;
     notes: string;
+    flip_x: boolean;
   };
   clips: Clip[];
   segments: Segment[];

@@ -242,6 +242,12 @@ class Capture(BaseModel):
     #: warning has nothing to calibrate against and can only guess.
     revolutions: float | None = None
     notes: str = ""
+    #: Rotate the model 180 degrees about the +X axis of the reconstruction's world
+    #: frame, for display and for export. COLMAP's world frame is arbitrary and every
+    #: capture so far has come out inverted, so this defaults on. The up axis is
+    #: recoverable -- the camera centres lie in a plane whose normal is it -- but the
+    #: sign of that normal is not, and this is the sign.
+    flip_x: bool = True
 
     @property
     def needs_background_mask(self) -> bool:

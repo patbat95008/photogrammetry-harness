@@ -489,3 +489,14 @@ def test_cosmetic_params_stay_cosmetic_after_normalisation(manifest, registry):
     before = compute_fingerprints(manifest, registry)
     manifest.stages[StageId.EXTRACT].params = {"thumbnail_px": 512}
     assert compute_fingerprints(manifest, registry) == before
+
+
+def test_the_orientation_flip_invalidates_nothing(manifest, registry):
+    """It is a presentation and export choice, not a reconstruction input.
+
+    Nothing between extract and dense reads it, so turning the model over in the
+    viewer must never throw away hours of solving.
+    """
+    before = compute_fingerprints(manifest, registry)
+    manifest.capture.flip_x = not manifest.capture.flip_x
+    assert compute_fingerprints(manifest, registry) == before

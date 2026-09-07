@@ -479,7 +479,12 @@ arbitrary — the cup model comes out lying on its side. But the camera centres 
 capture modes: the cameras orbit the subject horizontally in one, and the subject rotates
 about a vertical axis in the other. Fit a plane to the camera centres (or take the axis of
 least variance, which is the cheap version) and you have "up" without asking the user. The
-sign is ambiguous; resolve it however you like and offer a flip.
+sign is ambiguous, and that half is already resolved: `capture.flip_x` in `project.json`
+records a 180° turn about +X, defaulting on, set from the `Flip` toggle in the cloud
+viewer's toolbar. Apply it about the model centre so the export comes out the way up it
+was reviewed, and do not ask the user again. It is deliberately absent from every
+fingerprint (nothing upstream reads it); add it to the export stage's `external_inputs()`
+when that stage is written — at creation, so it cannot rehash anything that exists.
 
 **Scale.** `capture.baseline_mm` for a fixed-mount rig — that measurement is the only part
 that cannot be reconstructed afterwards, which is why the checklist nags about it. For

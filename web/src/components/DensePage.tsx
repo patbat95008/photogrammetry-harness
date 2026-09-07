@@ -19,6 +19,7 @@ export default function DensePage() {
             </p>
             <PointCloudViewer
               cloudUrl={`/api/runs/${runId}/artifacts/dense/preview.ply`}
+              runId={runId}
               height={520}
             />
           </div>

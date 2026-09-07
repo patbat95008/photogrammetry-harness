@@ -98,6 +98,7 @@ export default function SparsePage() {
             <PointCloudViewer
               cloudUrl={`/api/runs/${runId}/artifacts/sparse/preview.ply`}
               posesUrl={`/api/runs/${runId}/artifacts/sparse/poses.json`}
+              runId={runId}
             />
             <RegistrationTable runId={runId} />
           </div>

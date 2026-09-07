@@ -70,8 +70,11 @@ PLANNED: dict[StageId, PlannedStage] = {
             "Isolate the largest connected component and drop floating fragments.",
             "Set absolute scale from the measured camera baseline -- photogrammetry "
             "recovers shape but never size.",
-            "Orient and centre the bust, decimate to a sane polygon count, and export "
-            "GLB/OBJ/STL via headless Blender.",
+            "Orient and centre the bust -- the up axis from the plane the cameras lie "
+            "in, its sign from the flip recorded in the cloud viewer, so the model "
+            "exports the way up it was reviewed.",
+            "Decimate to a sane polygon count and export GLB/OBJ/STL via headless "
+            "Blender.",
             "Render a turntable for the record.",
         ],
     ),

@@ -22,6 +22,10 @@ class CreateRunRequest(BaseModel):
     name: str = ""
 
 
+class OrientationRequest(BaseModel):
+    flip_x: bool
+
+
 class UpdateRunRequest(BaseModel):
     name: str | None = None
     capture_mode: CaptureMode | None = None
@@ -136,6 +140,35 @@ def update_run(body: UpdateRunRequest, run: RunHandle = Depends(get_run)) -> dic
     manifest = run.update(mutate)
     run.bus.publish("run.updated")
     return _run_summary(manifest)
+
+
+@router.get("/{run_id}/orientation")
+def get_orientation(run: RunHandle = Depends(get_run)) -> dict[str, bool]:
+    """Which way up this run's model is.
+
+    Its own endpoint rather than a field read off ``GET /api/runs/{run_id}``, because
+    that one walks the run directory for disk usage -- tens of gigabytes of depth maps
+    on a finished run -- and the cloud viewer asks for this on every mount.
+    """
+    return {"flip_x": run.load().capture.flip_x}
+
+
+@router.put("/{run_id}/orientation")
+def set_orientation(
+    body: OrientationRequest, run: RunHandle = Depends(get_run)
+) -> dict[str, bool]:
+    """Record the flip chosen in the cloud viewer.
+
+    Presentation and export only: no stage reads it as an input, so it is deliberately
+    absent from every fingerprint and changing it invalidates nothing.
+    """
+
+    def mutate(manifest: RunManifest) -> None:
+        manifest.capture.flip_x = body.flip_x
+
+    manifest = run.update(mutate)
+    run.bus.publish("run.updated")
+    return {"flip_x": manifest.capture.flip_x}
 
 
 @router.delete("/{run_id}", status_code=204)
