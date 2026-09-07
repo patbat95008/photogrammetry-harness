@@ -252,11 +252,10 @@ export default function PointCloudViewer({
    * HTML default of 300x150 with the loop never started. Measuring first and
    * mounting second costs one render and removes that possibility.
    *
-   * Note this was NOT enough to make the viewer work inside the embedded browser
-   * used during development, where ResizeObserver appears not to fire at all and
-   * only a window resize event ever produced a measurement. That looks like a
-   * limitation of that browser rather than of this page -- but it does mean the
-   * viewer has not been confirmed by eye in a normal browser yet.
+   * Confirmed rendering in Firefox. It does not render in the embedded browser used
+   * by some tooling, where ResizeObserver never fires at all and only a window
+   * resize event ever produces a measurement -- so if this ever looks blank, check
+   * it in a real browser before assuming the reconstruction is empty.
    */
   const [ready, setReady] = useState(false);
   useEffect(() => {

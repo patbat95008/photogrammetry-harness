@@ -1,32 +1,33 @@
 # Photogrammetry Harness — Handover
 
-**Status:** Stages 1, 2, 4 and 5 (ingest → select → align → dense) complete and
-verified end to end on real footage. Masking, meshing and export designed, stubbed,
-not built.
-**Last verified:** 2026-09-07, on the `cup-1` orbit, plus synthetic ground-truth footage.
+**Status:** Ingest → select → align → dense is **built and verified end to end on real
+footage**. Mask, mesh and export are designed and stubbed.
+**Last verified:** 2026-09-07 on the `cup-1` orbit, plus synthetic ground-truth footage.
 **Tests:** 182 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
 
 ---
 
 ## 1. What this is
 
-A local web harness that turns video into a 3D model, built around existing
-reconstruction engines rather than replacing them. The end goal is a printable 3D
-bust of the owner's head, captured by rotating in an office chair while two phone
-cameras record from different heights.
+A local web harness that turns video — or a folder of photographs — into a 3D model,
+built around existing reconstruction engines rather than replacing them. The end goal is
+a printable 3D bust of the owner's head, captured by rotating in an office chair while
+two phone cameras record from different heights.
 
-The harness owns the parts those engines do badly: ingest, frame selection,
-masking, quality control, and making failures legible. COLMAP and OpenMVS do the
-actual reconstruction.
+The harness owns the parts those engines do badly: ingest, frame selection, masking,
+quality control, and making failures legible. COLMAP and OpenMVS do the actual
+reconstruction.
 
 ```
-FFmpeg → OpenCV/SAM 2 → COLMAP → OpenMVS → Blender
-extract   select/mask    align    dense/mesh  cleanup
-  ✅         ✅ ⬜         ✅        ✅   ⬜       ⬜
+FFmpeg / stills → OpenCV/SAM 2 → COLMAP → OpenMVS → Blender
+ingest            select/mask     align    dense/mesh  cleanup
+  ✅                ✅ ⬜          ✅       ✅   ⬜       ⬜
 ```
 
-Sources are video **or** a folder of photographs; both land in the same slot-indexed
-frame layout, and nothing downstream knows which produced them. See §10.
+**The whole tower has now been proven.** A 60-second handheld orbit of a coffee cup
+became a 738,015-point dense cloud in which the mug, its handle, the brushes standing in
+it and the patio table are all plainly recognisable. §5 has the numbers, §7 has the
+capture. Everything from here is refinement of a chain that works.
 
 ---
 
@@ -44,9 +45,15 @@ dev.bat             two windows: Vite on :5173 with hot reload, auto-reloading
 Tests: `.venv\Scripts\python.exe -m pytest server/tests -q`
 
 **Environment is fully provisioned and verified green on the Doctor page:** ffmpeg
-(gyan full build, on PATH), COLMAP 4.2.0 CUDA, OpenMVS 2.4.0 CUDA prebuilt,
-Blender 5.2 LTS, torch 2.14.0+cu130 on an RTX 4090 (24 GB), all four SAM 2.1
-checkpoints. Python 3.12.9 in `.venv`. Runs live in `D:\pgh-runs`.
+(gyan full build, on PATH), COLMAP 4.2.0 CUDA (commit be5e291), OpenMVS 2.4.0 CUDA
+prebuilt (built Jan 2026), Blender 5.2 LTS, torch 2.14.0+cu130 on an RTX 4090 (24 GB),
+all four SAM 2.1 checkpoints. i9-9900K, 64 GB RAM. Python 3.12.9 in `.venv`. Runs live
+in `D:\pgh-runs`.
+
+**The 3D viewers work in Firefox.** They do *not* render in some embedded/automation
+browsers, where `ResizeObserver` never fires and the canvas stays at its 300×150
+default. If a cloud ever looks blank, check it in a real browser before concluding the
+reconstruction is empty.
 
 ---
 
@@ -55,41 +62,42 @@ checkpoints. Python 3.12.9 in `.venv`. Runs live in `D:\pgh-runs`.
 ```
 launch.bat  dev.bat  requirements.txt
 scripts/needs-build.ps1        UI freshness check (see §6.9)
-scripts/fetch-vocab-tree.ps1   COLMAP vocabulary tree (but read §6.11 first)
+scripts/fetch-vocab-tree.ps1   COLMAP vocabulary tree — but read §6.11 first
 data/                          vocabulary tree; machine-local, gitignored
 docs/capture-checklist.md      read before filming — capture decides most outcomes
 docs/HANDOVER.md               this file
 
 server/pgh/
   config.py       tool paths, SAM2 checkpoint↔config pairs, ingest roots
-  registry.py     doctor probes: versions, CUDA, COLMAP option dialect
+  registry.py     doctor probes: versions, CUDA, COLMAP dialect, vocabulary tree
   manifest.py     project.json models — StageId/State, CaptureMode, Segment, Clip
   fingerprint.py  the staleness engine  ← load-bearing, read this first
-  timeline.py     shared slot clock across clips  ← the core of Stage 1
+  timeline.py     shared slot clock across clips  ← the core of video ingest
   jobs.py         single-worker queue, per-stage logs, lifecycle events
   proc.py         the ONLY module allowed to import subprocess (see §6.4)
   events.py       append-only event log + SSE bus
   store.py        run directories, crash recovery
   sync.py         audio cross-correlation
   files.py        source identity, ingest-root guard
-  photos.py       reading a folder of stills: natural order, EXIF  ← see §10
-  ply.py          point clouds in and previews out  ← see §6.13
+  photos.py       reading a folder of stills: natural order, EXIF  ← §10
+  ply.py          point clouds in, browser-sized previews out  ← §6.13
   vendor/
     ffmpeg.py     argv builders and probing
-    colmap.py     argv builders (dialect-aware, §6.6) + sparse model parsing
-    openmvs.py    argv builders, flags read off the v2.4.0 binaries  ← see §6.4
+    colmap.py     dialect-aware argv builders (§6.6) + sparse model parsing
+    openmvs.py    argv builders, flags read off the v2.4.0 binaries  ← §6.4
   api/            runs clips stages sync fs artifacts events doctor deps
   stages/
     base.py       Stage contract: params, external_inputs, preflight, run
     shell.py      run_tool, COLMAP counter parsing, OpenMVS log tailing  ← §6.4
     registry.py   StageResolver the staleness engine runs against
     extract.py    Stage 1 ✅ — video frames, and the stills branch (§10)
-    select.py     Stage 2 ✅ — sharpness, duplicates, coverage, overrides
+    select.py     Stage 2 ✅ — sharpness, duplicates, coverage, manual overrides
     sparse.py     Stage 4 ✅ — COLMAP align
     dense.py      Stage 5 ✅ — undistort, InterfaceCOLMAP, DensifyPointCloud
     planned.py    copy for the three unbuilt stages, varies by capture mode
 web/src/          Vite + React + TS. StageShell auto-builds param forms from the
                   pydantic JSON schema — a new stage gets a working UI for free.
+  components/PointCloudViewer.tsx   one r3f viewer, shared by sparse and dense
 ```
 
 ### Run directory (`D:\pgh-runs\<run_id>\`)
@@ -102,27 +110,26 @@ frames/<group>/000042.jpg     slot-indexed, one folder per camera
 frames/frames.jsonl   per-frame: dHash, luma, sync residual, duplicate flag
                       (timing fields are null for a photo set — no clock)
 thumbs/<group>/       256px webp
-select/selection.jsonl  per-frame keep/reject with a reason and a sharpness score
+select/selection.jsonl  per-frame keep/reject, with a reason and a sharpness score
 sparse/images/<group>/  hardlink farm of just the selected frames
-sparse/model/0/         COLMAP model; model_best in artifacts names the winner
-sparse/poses.json       camera intrinsics and positions, for the frusta overlay
+sparse/model/0/         COLMAP model; artifacts["model_best"] names the winner
+sparse/poses.json       intrinsics and camera positions, for the frusta overlay
 sparse/registration.jsonl  which frames registered, and how many points each holds
 sparse/preview.ply      normalised cloud the viewer loads
 dense/undistorted/      rectified images plus the pinhole model OpenMVS needs
 dense/scene_dense.ply   the full dense cloud
 dense/preview.ply       decimated to a cap, so the browser can hold it
 logs/                 per-stage run logs
-.partial/             stage scratch; committed by atomic rename
+.partial/             stage scratch; committed by atomic rename, wiped on failure
 ```
 
-`D:\pgh-runs` rather than the project folder is deliberate: the dense stage builds
-paths like `dense/undistorted/stereo/depth_maps/cam_high/000042.jpg.geometric.bin`,
-and COLMAP and OpenMVS may not honour long-path support even though Windows has it
-enabled here.
+`D:\pgh-runs` rather than the project folder is deliberate: the dense stage builds paths
+like `dense/undistorted/stereo/depth_maps/cam_high/000042.jpg.geometric.bin`, and COLMAP
+and OpenMVS may not honour long-path support even though Windows has it enabled here.
 
 ---
 
-## 4. The two ideas everything else hangs off
+## 4. The ideas everything else hangs off
 
 ### 4.1 Slot naming is a shared clock
 
@@ -130,17 +137,17 @@ enabled here.
 Not the same source frame number — the same moment in time.
 
 This exists because two cameras on fixed mounts, in the *subject's* reference frame,
-orbit the head in lockstep at a constant relative pose. That is a rigid two-sensor
-rig, and COLMAP 4.2 can exploit it (`rig_configurator`, `--Mapper.ba_refine_sensor_from_rig`),
-which constrains bundle adjustment hard and helps the orbit close. COLMAP groups rig
-frames by **matching filename suffix across per-camera folders**, so the naming *is*
-the mechanism.
+orbit the head in lockstep at a constant relative pose. That is a rigid two-sensor rig,
+and COLMAP 4.2 can exploit it (`rig_configurator`,
+`--Mapper.ba_refine_sensor_from_rig`), which constrains bundle adjustment hard and helps
+the orbit close. COLMAP groups rig frames by **matching filename suffix across
+per-camera folders**, so the naming *is* the mechanism.
 
-Nothing depends on it yet — rigs land at M8 — but Stage 1 was built so that adding
-them later needs no re-extraction. `timeline.py` is where this lives.
+Nothing depends on it yet — rigs are still unbuilt (§8) — but ingest was built so that
+adding them later needs no re-extraction. `timeline.py` is where this lives.
 
-Segments carry it: clips recorded simultaneously share a segment and a timeline;
-a separate pass (the crown shot) gets its own disjoint block of slot indices.
+Segments carry it: clips recorded simultaneously share a segment and a timeline; a
+separate pass (the crown shot) gets its own disjoint block of slot indices.
 
 ### 4.2 Capture mode inverts the pipeline
 
@@ -156,360 +163,443 @@ a separate pass (the crown shot) gets its own disjoint block of slot indices.
 (simultaneous but handheld — paired in time, solved as independent cameras), and
 `SINGLE` (a separate pass).
 
+The align stage already emits a warning when the mode is `subject_rotates` and masking
+was skipped, because a *confident* model is the failure case there.
+
 ### 4.3 Staleness, and why it's pleasant
 
-`fingerprint.py` hashes each stage from its params (minus cosmetic ones), its
-declared external inputs, and its upstream stages' fingerprints. Because it is
-content-derived rather than a run counter, **changing a param and changing it back
-leaves downstream work valid.** Verified on the live system, not just in tests.
+`fingerprint.py` hashes each stage from its params (minus cosmetic ones), its declared
+external inputs, and its upstream stages' fingerprints. Because it is content-derived
+rather than a run counter, **changing a param and changing it back leaves downstream
+work valid.** Verified on the live cup run, not just in tests.
 
 Mark a param cosmetic with `json_schema_extra={"affects_fingerprint": False}` —
-`thumbnail_px` is the example.
+`thumbnail_px` and `preview_point_cap` are the examples.
+
+Two traps, both of which threw away hours of valid work before being fixed, and both now
+covered by tests:
+
+- **Params are normalised through their model before hashing.** A stage run before
+  anyone opened its page stores `{}`; the moment the UI saves that same form it stores
+  every field. Hashing the raw dict meant that merely pressing Save invalidated
+  everything downstream.
+- **Only add keys to `external_inputs` conditionally.** Adding one unconditionally
+  changes the hash of every run ever made. `extract._clip_inputs` emits the photo-set
+  keys only for a photo set, for exactly this reason.
+
+`StageState.SKIPPED` is a fourth state alongside done/stale/failed: a deliberate decision
+not to run something, which dependents treat as satisfied. Only masking is skippable
+(`api/stages.py:SKIPPABLE`).
+
+### 4.4 Adding a stage
+
+Server side is three edits:
+
+1. New `server/pgh/stages/<name>.py`: a `StageParams` subclass, a `Stage` subclass with
+   `id`/`label`/`description`/`params_model`, then `external_inputs`, `preflight`,
+   `run`. Keep the class short and put the work in module-level free functions —
+   `extract.py` and `dense.py` are the shape to copy.
+2. Import and `registry.register(YourStage())` in `stages/__init__.py`.
+3. Delete its entry from `stages/planned.py`.
+
+Inside `run()`:
+
+- Write into `ctx.scratch/<name>/`, then commit by `rmtree(target)` +
+  `scratch.replace(target)`. The framework wipes scratch on failure, so a crashed stage
+  leaves nothing half-written — **and leaves nothing to inspect either**, which is why
+  `dense.py` logs the PLY header before parsing it.
+- Shell out through `stages/shell.py:run_tool`, never `proc` directly. It handles
+  cancellation for silent children (§6.15) and raises with the tool named, and that
+  message is what the user reads on the stage page.
+- Bulk per-item data goes in a `.jsonl` sidecar, never in `metrics` — `project.json` is
+  rewritten on every change.
+- Warnings are full prose sentences naming the cause *and* the consequence. That house
+  style is consistent everywhere; match it.
+
+Client side is two edits: a page component wrapping `StageShell` with a render-prop
+results view, and one entry in `BUILT_STAGES` in `App.tsx`. A new SSE event type must
+also be added to the `types` array in `useEventStream.ts` or it is dropped silently.
 
 ---
 
 ## 5. What's verified, and how
 
-**Synthetic ground truth (the important one).** Two clips were cut from a single
-master at frame-exact offsets (2.0 s and 1.4 s), so correctly-aligned slots must come
-from the *same master frame*. Result: all 68 slot pairs differed by exactly
-−0.6000 s, identical dHash, mean pixel difference 0.25/255. Audio sync recovered
-that −0.600 s offset from a clap alone at confidence 363.
+**Synthetic ground truth.** Two clips were cut from a single master at frame-exact
+offsets (2.0 s and 1.4 s), so correctly-aligned slots must come from the *same master
+frame*. Result: all 68 slot pairs differed by exactly −0.6000 s, identical dHash, mean
+pixel difference 0.25/255. Audio sync recovered that −0.600 s offset from a clap alone at
+confidence 363.
 
-**Real footage (`cup-1`, see §7).** Portrait HEVC with a −90° display matrix
-extracted upright at 1080×2320; 241 frames in 22.6 s; VFR correctly detected;
-exposure drift and duplicate frames flagged.
-
-**The full chain, on `cup-1`.** The tower stands up. 241 extracted frames became a
-738,015-point dense cloud in which the mug, its handle, the brushes standing in it and
-the patio table are all plainly recognisable.
+**The full chain, on `cup-1`.**
 
 | Stage | Result | Time |
 |---|---|---|
-| Select | 241 → **183** kept (43 too soft, 15 duplicates) | 3 s |
+| Extract | 241 frames at 4 fps, correctly oriented from a −90° display matrix | 22.6 s |
+| Select | 241 → **183** kept (43 too soft, 15 duplicates) | 3.1 s |
 | Align | **183 of 183 registered**, one model, 50,189 points | 11m 52s |
 | Dense | **738,015 points**, 4,033 per view, 2.6 GB of depth maps reclaimed | 3m 47s |
 
 Align in detail: mean reprojection error **1.162 px**, mean track length **6.04**, a
-single submodel — the 1.5-revolution orbit closed. The camera trajectory is a smooth
-unbroken arc with no jumps. COLMAP started from a guessed focal length of 2784 px
-(1.2 × the long edge, because video frames carry no EXIF) and bundle adjustment pulled
-it to **1683 px**, a 40% correction it had to find unaided. That is the strongest
-argument for the stills path in §10.
+single submodel — the 1.5-revolution orbit closed, and the camera trajectory is a smooth
+unbroken arc. COLMAP started from a guessed focal length of 2784 px (1.2 × the long edge,
+because video frames carry no EXIF) and bundle adjustment pulled it to **1683 px**
+unaided. That is the strongest argument for the stills path (§10).
 
-Everything §7 predicted about this capture showed up: the glass table produced a haze
-of phantom points beneath the mug, and the brushes came out as streaks rather than
+Dense peaked at 19.1 GB of system RAM at `resolution_level 1`. Matching was exhaustive
+(§6.11) and at 6.3 minutes was over half the total wall clock.
+
+Everything §7 predicted about this capture showed up: the glass table produced a haze of
+phantom points beneath the mug, and the brushes came out as streaks rather than
 cylinders. Neither is a bug.
 
-Timings are for 183 images at 1080×2320 on the 4090. Matching was exhaustive (§6.11),
-and at 6.3 minutes it is over half the total.
+**Cancellation.** Killing a stage that shelled out to a child kills the whole process
+tree — verified with `tasklist`, no orphan survived. Now also covered for a child that
+produces *no output at all*, which is the OpenMVS case and the one a per-line check
+cannot handle (§6.15).
 
-**Cancellation, again, for silent children.** Cancelling a stage whose child prints
-nothing — the OpenMVS case — kills the whole process tree and leaves no orphan, now
-covered by a test that uses a deliberately silent child rather than one that narrates.
+**Crash recovery.** A stage left `RUNNING` by a killed server is marked failed on startup
+and its scratch discarded.
 
 **Staleness, on the live run.** Change `resolution_level`, dense goes stale; change it
-back, dense returns to done without re-running. Change `target_count` on select and
-align and dense both go stale citing "upstream"; revert it and all three come back.
-The cosmetic `preview_point_cap` invalidates nothing.
+back, dense returns to done without re-running. Change `target_count` on select and both
+align and dense go stale citing "upstream"; revert it and all three come back. The
+cosmetic `preview_point_cap` invalidates nothing.
 
-**Cancellation.** Killing a stage that shelled out to a child kills the whole
-process tree — verified with `tasklist`, no orphan survived.
-
-**Crash recovery.** A stage left `RUNNING` by a killed server is marked failed on
-startup and its scratch discarded.
+**Stills ingest.** Twelve synthetic photographs with EXIF: natural order preserved
+(`IMG_9` before `IMG_10`), eleven hardlinked with EXIF byte-identical, the one carrying a
+rotation flag physically rotated 320×240 → 240×320 with the flag cleared and its focal
+length preserved.
 
 ---
 
 ## 6. Expensive lessons — do not re-derive these
 
-**6.1 `fps=...:start_time=` does not phase-shift the sampling grid.** *(the big one)*
-It anchors at zero and merely skips earlier frames. Asking for `start_time=0.6` at
-6 fps yields frames at 0.667, 0.833… Two cameras with different offsets would each
-snap to the same absolute grid and sample **different instants under the same slot
-number** — a silent 67 ms misalignment that survives to reconstruction. Fix: shift
-the timeline with `setpts=PTS-<start>/TB` *before* `fps`. See `_build_filters`.
+**Numbering is stable — code comments cite these by number** (§6.4, §6.5, §6.7 and §6.8
+are referenced from `shell.py`, `colmap.py`, `openmvs.py` and `dense.py`). Append, don't
+renumber.
+
+### Ingest
+
+**6.1 `fps=...:start_time=` does not phase-shift the sampling grid.** *(the big one)* It
+anchors at zero and merely skips earlier frames. Asking for `start_time=0.6` at 6 fps
+yields frames at 0.667, 0.833… Two cameras with different offsets would each snap to the
+same absolute grid and sample **different instants under the same slot number** — a
+silent 67 ms misalignment that survives to reconstruction. Fix: shift the timeline with
+`setpts=PTS-<start>/TB` *before* `fps`. See `_build_filters`.
 
 **6.2 `-t` with `-copyts` measures from zero,** not from the first frame, silently
 truncating the tail. Bound the range with a `trim` filter instead.
 
-**6.3 The `fps` filter with `round=near` needs half an output period of lookahead**
-to commit a frame; at end-of-stream it discards the pending one. `timeline.py`
-therefore holds the window back by one source frame + `0.5/fps`. Without it you get
-one frame fewer than planned and extraction refuses to map slots.
+**6.3 The `fps` filter with `round=near` needs half an output period of lookahead** to
+commit a frame; at end-of-stream it discards the pending one. `timeline.py` therefore
+holds the window back by one source frame + `0.5/fps`. Without it you get one frame fewer
+than planned and extraction refuses to map slots.
+
+### Talking to the engines
 
 **6.4 OpenMVS prints *nothing* to stdout or stderr** — not even `--help`. The version
 banner and all output go only to `<Tool>-<timestamp>.log` written to the **current
-working directory**. Hence: every subprocess gets an explicit `cwd`, and `proc.py` is
-the only module permitted to import `subprocess` (also because the project path
-contains spaces and ` - `, so argv must always be a list with `shell=False`).
+working directory**. Three consequences: every subprocess gets an explicit `cwd`;
+`proc.py` is the only module permitted to import `subprocess` (also because the project
+path contains spaces and ` - `, so argv must always be a list with `shell=False`); and
+progress has to come from tailing that log, which is what `shell.py:OpenMVSLog` does.
 
 **6.5 COLMAP logs to stderr via glog** (`--log_target` defaults to `stderr_and_file`).
-Pass `--log_target stdout --log_color 0` from the argv builder, not call sites.
-Progress is `[%d/%d]` counters, not percentages.
+Pass `--log_target stdout --log_color 0` from the argv builder, not call sites. Progress
+is `[%d/%d]` counters, not percentages.
 
-**6.6 COLMAP 4.2 has *both* option namespaces.** `--FeatureMatching.use_gpu` and
-`--SiftMatching.max_ratio` are both valid — pipeline/GPU options moved, algorithm
-tuning didn't. Do not blanket-rename. The doctor records which dialect the binary
-speaks; read it rather than guessing.
+**6.6 COLMAP 4.2 has *both* option namespaces.** Verified against the binary in `tools/`:
+`--FeatureExtraction.max_image_size` and `--SiftExtraction.max_num_features` are *both*
+correct at the same time — pipeline and GPU options moved, algorithm tuning did not — and
+`filter_stationary_matches` lives on `TwoViewGeometry`. Do not blanket rename.
+`registry.colmap_dialect()` records which dialect the binary speaks; read it rather than
+guessing. `tests/test_colmap_argv.py` asserts this against both dialects.
 
-**6.7 Masks are three conventions, not one.** COLMAP wants `<name>.<ext>.png`
-(`.png` appended to the *full* filename including `.jpg`); OpenMVS wants
-`<name>.mask.png`. Store one canonical form and generate per-engine hardlink views.
+**6.7 Masks are three conventions, not one.** COLMAP wants `<name>.<ext>.png` (`.png`
+appended to the *full* filename including `.jpg`); OpenMVS wants `<name>.mask.png`. Store
+one canonical form and generate per-engine hardlink views. Note that `DensifyPointCloud`
+has a native `-m/--mask-path` expecting the OpenMVS form, plus `--ignore-mask-label`.
 
-**6.8 COLMAP does not undistort masks,** but OpenMVS consumes undistorted images.
-Run `image_undistorter` a second time over the mask view with **identical** scale/ROI
-flags, then threshold at 127. Drifting flags produce subtly wrong masks exactly where
-ears and hair live.
+**6.8 COLMAP does not undistort masks,** but OpenMVS consumes undistorted images. Run
+`image_undistorter` a second time over the mask view with **identical** scale/ROI flags,
+then threshold at 127. Drifting flags produce subtly wrong masks exactly where ears and
+hair live. **Not implemented — `DenseStage.preflight` blocks rather than ignoring masks.**
 
-**6.9 Batch escaping.** A PowerShell pipeline inside `for /f` has to survive two
-levels of escaping; cmd hands PowerShell a literal `^|` and the check fails oddly.
-That logic lives in `scripts/needs-build.ps1` for this reason. Also: this machine has
-`NoDefaultCurrentDirectoryInExePath=1`, so `cmd /c launch.bat` fails from a shell —
-use `.\launch.bat`. Double-clicking is unaffected.
+**6.9 Batch escaping.** A PowerShell pipeline inside `for /f` has to survive two levels of
+escaping; cmd hands PowerShell a literal `^|` and the check fails oddly. That logic lives
+in `scripts/needs-build.ps1` for this reason. Also: this machine has
+`NoDefaultCurrentDirectoryInExePath=1`, so `cmd /c launch.bat` fails from a shell — use
+`.\launch.bat`. Double-clicking is unaffected.
 
-**6.10 Thresholds were calibrated, not guessed.** Sync confidence: uncorrelated room
-tone scores ~7 (the max of a few hundred thousand noise samples always sits several
-sigma above their RMS), real claps score 190–310. Threshold is 25. An initial guess of
-4 would have called pure noise a confident match.
+**6.10 Thresholds were calibrated, not guessed.** Sync confidence: uncorrelated room tone
+scores ~7, real claps score 190–310. Threshold is 25. An initial guess of 4 would have
+called pure noise a confident match.
 
-**6.11 The published COLMAP vocabulary trees do not work with this build.** *(cost a
-full matching run to find)* COLMAP replaced FLANN with faiss for its visual index in
-May 2025; the trees still served from demuc.de are the old format. Handing one to
-4.2.0 does not produce an error — it aborts the process with
-`STATUS_STACK_BUFFER_OVERRUN` (`0xC0000409`) partway through matching, *after*
-feature extraction has been paid for. Four bytes distinguish them: the faiss-era file
-opens with a version field of 1 or 2, a FLANN tree with its word count (32762 for the
-32K tree). `sparse.vocab_tree_status()` checks that before use and the matcher falls
-back to exhaustive; the doctor reports which you have. No faiss-format tree has been
-published yet.
+**6.11 The published COLMAP vocabulary trees do not work with this build.** *(cost a full
+matching run to find)* COLMAP replaced FLANN with faiss for its visual index in May 2025;
+the trees still served from demuc.de are the old format. Handing one to 4.2.0 does not
+produce an error — it aborts the process with `STATUS_STACK_BUFFER_OVERRUN`
+(`0xC0000409`) partway through matching, *after* feature extraction has been paid for.
+Four bytes distinguish them: the faiss-era file opens with a version field of 1 or 2, a
+FLANN tree with its word count (32762 for the 32K tree). `sparse.vocab_tree_status()`
+checks that before use and the matcher falls back to exhaustive; the doctor reports which
+you have. No faiss-format tree has been published yet.
 
-**6.12 Exhaustive matching is fine at this scale, and cannot miss a loop.** 183 frames
-is 16,653 pairs and took 6.3 minutes on the 4090 — against a whole-run budget measured
-in tens of minutes, that is not the bottleneck. It also closes the orbit by
-construction, which is the thing loop detection exists to do. Reach for sequential
-matching when frame counts climb past roughly 500, not before.
+**6.12 Exhaustive matching is fine at this scale, and cannot miss a loop.** 183 frames is
+16,653 pairs and took 6.3 minutes on the 4090. It closes the orbit by construction, which
+is the thing loop detection exists to do. Reach for sequential matching when frame counts
+climb past roughly 500, not before.
 
 **6.13 OpenMVS point clouds have variable-length records.** `scene_dense.ply` carries
-a per-point *list* of the views that saw it (`property list uchar int views`), so the
-record length differs from point to point and nothing can be memory-mapped. Reading it
-at a fixed stride does not fail — it returns normals and view indices interpreted as
-coordinates, which looks like a plausible cloud and is not one. `ply.py` detects the
-list in the header and walks records individually in that case, and both stages write
-a **normalised preview** (`x y z` float32 + `rgb` uchar, decimated to a cap) beside the
-full file so three.js's stock `PLYLoader` never has to guess a layout. The dense stage
-logs the header before parsing, because scratch is discarded on failure and that log
-line is then the only surviving evidence of what the engine wrote.
+*two* per-point lists — `view_indices` and `view_weights` — and puts colour *before* the
+normals. Record length therefore differs from point to point and nothing can be
+memory-mapped; reading at a fixed stride does not fail, it returns normals and view
+indices interpreted as coordinates, which looks like a plausible cloud and is not one.
+`ply.py` detects lists in the header and walks records individually in that case, and
+works by property *name* throughout. Both stages write a **normalised preview** (`x y z`
+float32 + `rgb` uchar, decimated to a cap) beside the full file so three.js's stock
+`PLYLoader` never has to guess a layout.
 
-**6.14 COLMAP's output arrives in bursts, not a stream.** glog block-buffers when
-stdout is a pipe rather than a console, so a matcher that ran for six minutes delivered
-its entire log in one flush at exit. `[%d/%d]` counters are still parsed and still
-correct, but the progress bar jumps rather than climbs, and a quiet stage is not
-evidence of a stuck one. Judge liveness from the process and the GPU, not the log.
+**6.14 COLMAP's output arrives in bursts, not a stream.** glog block-buffers when stdout
+is a pipe rather than a console, so a matcher that ran for six minutes delivered its
+entire log in one flush at exit. Counters are still parsed and still correct, but the
+progress bar jumps rather than climbs, and a quiet stage is not evidence of a stuck one.
+Judge liveness from the process and the GPU, not the log.
+
+### The harness itself
 
 **6.15 Cancellation cannot be driven by output.** `extract.py` checks the cancel token
 inside its line callback, which works only because ffmpeg narrates constantly. OpenMVS
-prints *nothing* and COLMAP goes quiet through bundle adjustment, so for those a
-per-line check never fires and a forty-minute densify would be uncancellable while
-holding the GPU. Everything that shells out therefore goes through
-`stages/shell.py:run_tool`, which drives `proc.stream_with_cancel` from
-`ctx.proc_cancel` — a `threading.Event` watched on its own thread. `jobs.py` had
-created that event all along but never passed it to the stage.
+prints nothing and COLMAP goes quiet through bundle adjustment, so for those a per-line
+check never fires and a forty-minute densify would be uncancellable while holding the
+GPU. Everything that shells out goes through `stages/shell.py:run_tool`, which drives
+`proc.stream_with_cancel` from `ctx.proc_cancel` — a `threading.Event` watched on its own
+thread. `jobs.py` had created that event all along but never passed it to the stage.
 
-**6.16 Tail a log in binary, not text.** The OpenMVS log tail seeks to a byte offset
-each poll. `TextIOWrapper.seek()` only accepts opaque cookies from `tell()`; a plain
-integer raises, which killed the tailing thread silently and froze progress for the
-rest of the run. Opening the file `"rb"` and decoding per line fixes it. A partial
-final line is held back and re-read next pass, so nothing is delivered twice.
+**6.16 Tail a log in binary, not text.** The OpenMVS log tail seeks to a byte offset each
+poll. `TextIOWrapper.seek()` only accepts opaque cookies from `tell()`; a plain integer
+raises, which killed the tailing thread silently and froze progress for the rest of the
+run. Open `"rb"` and decode per line. A partial final line is held back and re-read next
+pass, so nothing is delivered twice.
 
-**6.17 Reading `project.json` from a second handle can break the writer.** The manifest
-is saved by writing a temporary file and `os.replace`-ing it into place, which fails on
-Windows with `PermissionError` if anything else holds the target open. The server is
-safe because `RunHandle.load()` returns a cached object, but a script that polls
+**6.17 Reading `project.json` from a second handle can break the writer.** The manifest is
+saved by writing a temporary file and `os.replace`-ing it into place, which fails on
+Windows with `PermissionError` if anything else holds the target open. The server is safe
+because `RunHandle.load()` returns a cached object — but a script that polls
 `run.io.load()` in a loop will intermittently break the stage it is watching. Poll
-`run.load()`, or the event bus.
+`run.load()`, or the event bus. **Corollary:** while the server is running it owns the
+cached manifest, so editing `project.json` from a script is silently overwritten by the
+server's next write. Stop the server first.
+
+**6.18 `JobState.SUCCEEDED` is set just before the manifest is committed.** A caller
+polling job state can therefore read the record before the results land, and
+`runner.stop()` signals rather than joining. Wait on the stage record or the
+`stage.finished` event instead.
 
 ---
 
 ## 7. The smoke test: `cup-1`
 
-**Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:** `C:\Users\patru\Downloads\20260907_Coffee-Cup-Orbit.mp4`
+**Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:**
+`C:\Users\patru\Downloads\20260907_Coffee-Cup-Orbit.mp4`
 
-Handheld single-camera orbit of a mug on a glass patio table. 60.3 s, 1.5 circuits,
-HEVC 2320×1080 portrait (−90° display matrix), 29.92 fps, bt709, has audio.
-Configured as `camera_orbits`, `revolutions=1.5`, one `SINGLE` segment.
-
-Extract at 4 fps produced **241 frames, correctly oriented**, in 22.6 s.
+Handheld single-camera orbit of a mug on a glass patio table. 60.3 s, ~1.5 circuits, HEVC
+2320×1080 portrait (−90° display matrix), 29.92 fps, bt709, has audio. Configured as
+`camera_orbits`, `revolutions=1.5`, one `SINGLE` segment. Masking **skipped**.
 
 | Reading | Value | Verdict |
 |---|---|---|
 | Rotation rate | 9.0 deg/s | Good — well under the 15 deg/s rolling-shutter threshold |
 | Sync residual p95 | 0.011 s | Fine (single camera, so not load-bearing) |
-| Duplicates | 15 (6%) | Normal; selection will drop them |
+| Duplicates | 15 (6%) | Normal; selection dropped them |
 | Mean luma range | 17% | **Auto-exposure was hunting** — expect texture seams |
 | VFR | suspected | Real phone footage; handled |
 
-**Known weaknesses of this capture, in rough order of severity.** None block using it
-as a pipeline test; all matter if the mesh looks wrong.
+**Known weaknesses of this capture, in rough order of severity.** All were predicted
+before the run and all showed up; none blocked it.
 
-1. **Glass table.** Transparent and specular. Reflections move with the camera and
-   violate the rigid-scene assumption, so expect phantom geometry below the mug.
+1. **Glass table.** Transparent and specular. Reflections move with the camera and violate
+   the rigid-scene assumption — produced the expected haze of phantom points below the mug.
 2. **Exposure hunting** (17%), plus a bright window blowing highlights in part of the
    orbit. Lock AE/AWB next time.
-3. **Single elevation ring.** Like the chair spin, this sees one band — the top of the
-   mug and the underside of the rim will be weak.
-4. **Thin objects** (pens/brushes in the mug) will not reconstruct cleanly.
+3. **Single elevation ring.** Like the chair spin, this sees one band — the top of the mug
+   and the underside of the rim are weak.
+4. **Thin objects** (brushes in the mug) reconstructed as streaks, not cylinders.
 
-**Why this run was strategically useful:** it is `camera_orbits`, so masking was not
-required at all, and M9 could be skipped entirely — which is how the whole COLMAP and
-OpenMVS chain got de-risked before any masking code existed. That worked; §5 has the
-numbers. Masking is now skipped on this run rather than pending, which is a state the
-manifest records explicitly (see `StageState.SKIPPED`).
-
-Also on disk: `D:\pgh-test\{master,cam_high,cam_eye}.mp4` — the synthetic
-ground-truth pair from §5. Keep them; they are the regression test for slot
-alignment. `D:\pgh-runs\20260907-extract-test` is their run.
+Also on disk: `D:\pgh-test\{master,cam_high,cam_eye}.mp4` — the synthetic ground-truth
+pair from §5. Keep them; they are the regression test for slot alignment.
+`D:\pgh-runs\20260907-extract-test` is their run.
 
 ---
 
 ## 8. Next steps
 
-M7, M8 and M10 are built (§5). Three milestones remain, in the order they should be
-taken.
+Three milestones remain. **Take M11 first**: it continues the chain that is already
+proven, in the module pattern that already exists, and gets a printable object out the far
+end. M9 is the hardest and the only one the face scan strictly requires.
 
-**M11 — Mesh.** `ReconstructMesh` → `RefineMesh` → `TextureMesh`, following the
-pattern in `stages/dense.py`: the OpenMVS argv builders live in `vendor/openmvs.py`
-and progress comes from tailing the tool's log (§6.4). Read the flags off the v2.4.0
-binaries with `--help` before writing the builders, exactly as was done for the two
-tools already wrapped — the source checkout in this repo is months ahead of them.
+### M11 — Mesh
 
-Show texture-shaded, matte-shaded and wireframe: a surface problem hidden by a
-convincing texture is the usual failure. The existing `PointCloudViewer` covers point
-clouds only, so this needs a mesh viewer beside it rather than a change to it.
+`ReconstructMesh` → `RefineMesh` → `TextureMesh`, over `dense/scene_dense.mvs`.
 
-**M12 — Export.** Headless Blender: largest connected component, decimate, scale from
-the measured baseline, orient and centre, then GLB/OBJ/STL plus a turntable render.
-Orientation matters more than it sounds — the cup model comes out in an arbitrary
-frame, so "which way is up" is not recoverable from the reconstruction alone.
+Follow `stages/dense.py` closely — it is the template, and the awkward parts are already
+solved there: argv builders in `vendor/openmvs.py`, `_run_openmvs` for log-tailed
+progress, `_PeakMemory` for the RAM reading, scratch-then-commit.
 
-**M9 — Mask.** SAM 2.1 large (`sam2.1_hiera_l.yaml` — the pairing is pinned in
-`config.py`; a mismatched pair loads *without raising* and produces poor masks).
-Click-to-prompt on frame 0 per camera, propagate in timeline order, **chunked at
-~150 frames** carrying the last mask forward as the next chunk's seed — the video
-predictor's inference state grows with sequence length and will OOM 24 GB otherwise.
-Design progress as `chunks × frames` from the start.
+**Do this first, before writing any builder.** Run each tool with `--help` in a scratch
+directory and read the log it drops, exactly as was done for the two tools already
+wrapped. The `openMVS - Source/` checkout in this repo tracks `develop` and is months
+ahead of the v2.4.0 binaries actually being run, so its documented options are not
+reliable. Record what you find in the `vendor/openmvs.py` module docstring, which already
+lists the flags for `InterfaceCOLMAP` and `DensifyPointCloud`.
 
-Three things are already waiting for it:
+Expect `--export-type obj` to matter: an OBJ + MTL + texture PNG is far easier to feed to
+Blender at M12 than a textured PLY.
+
+**Viewer.** `PointCloudViewer` handles points only, so this needs a sibling `MeshViewer`.
+Three shading modes, per the original design: photographic texture, neutral matte, and
+wireframe. That is not decoration — a surface problem hidden by a convincing texture is
+the usual failure mode, and matte shading is what exposes it. three.js loads OBJ+MTL via
+`OBJLoader`/`MTLLoader` from `three/examples/jsm/`.
+
+Watch: `RefineMesh` is the slow step and the one most likely to exhaust memory. Expose its
+resolution/scale knob as prominently as `resolution_level` is exposed on dense, and
+consider defaulting refinement **off** until it has been run once successfully.
+
+### M12 — Export
+
+Headless Blender: `blender -b -P <script>` (5.2 LTS is installed; note it is
+`required=False` in `config.py`, so the export stage must check for it in `preflight`).
+Largest connected component, decimate, scale, orient and centre, then GLB/OBJ/STL plus a
+turntable render.
+
+**Orientation is recoverable, and worth doing properly.** COLMAP's world frame is
+arbitrary — the cup model comes out lying on its side. But the camera centres in
+`sparse/poses.json` lie in a plane, and that plane's normal *is* the up axis for both
+capture modes: the cameras orbit the subject horizontally in one, and the subject rotates
+about a vertical axis in the other. Fit a plane to the camera centres (or take the axis of
+least variance, which is the cheap version) and you have "up" without asking the user. The
+sign is ambiguous; resolve it however you like and offer a flip.
+
+**Scale.** `capture.baseline_mm` for a fixed-mount rig — that measurement is the only part
+that cannot be reconstructed afterwards, which is why the checklist nags about it. For
+`camera_orbits` there is nothing to scale from, so this needs either a ruler in frame or a
+manual "this dimension is N mm" input. Say so plainly in the UI rather than exporting
+something confidently mis-scaled.
+
+### M9 — Mask
+
+SAM 2.1 large (`sam2.1_hiera_l.yaml` — the pairing is pinned in `config.py`; a mismatched
+pair loads *without raising* and produces poor masks). Click-to-prompt on frame 0 per
+camera, propagate in timeline order, **chunked at ~150 frames** carrying the last mask
+forward as the next chunk's seed — the video predictor's inference state grows with
+sequence length and will OOM 24 GB otherwise. Design progress as `chunks × frames` from
+the start.
+
+Four things are already waiting for it:
 
 - `StageState.SKIPPED` and the skip button exist so a run can proceed without masks;
-  un-skipping is what should bring this stage back.
-- `SparseStage.external_inputs` already reports whether masks exist, so producing
-  them correctly invalidates the alignment rather than leaving it falsely fresh.
-- **`DenseStage.preflight` refuses to run if masks are present**, because
-  undistorting them (§6.8) is not implemented. That block is deliberate and must be
-  lifted as part of this milestone, not before it.
+  un-skipping should bring this stage back.
+- `SparseStage.external_inputs` already reports whether masks exist, so producing them
+  correctly invalidates the alignment rather than leaving it falsely fresh.
+- **`DenseStage.preflight` refuses to run when masks are present**, because undistorting
+  them (§6.8) is not implemented. Lifting that block is part of this milestone, not before
+  it.
+- `DensifyPointCloud` takes masks natively via `-m/--mask-path` (§6.7), so the OpenMVS side
+  may be less work than expected. COLMAP takes them via `--ImageReader.mask_path`
+  (per-image) or `--ImageReader.camera_mask_path` (one for all), and the dialect probe
+  already reports whether `mask_path` is supported.
 
-*For the chair spin, deliberately run alignment without masks first.* It will very
-likely produce a background-locked model, and seeing that failure in the viewer is
-what makes this stage's parameters comprehensible. The align stage already emits a
-warning saying so when the capture mode is `subject_rotates` and masking was skipped.
+*For the chair spin, deliberately run alignment without masks first.* It will very likely
+produce a background-locked model, and seeing that failure in the viewer is what makes
+this stage's parameters comprehensible. The align stage already emits a warning saying
+exactly this when the mode is `subject_rotates` and masking was skipped.
 
-**Also worth doing at some point**
+### Smaller things
 
-- **The viewer has not been confirmed by eye in a normal browser.** It was verified
-  programmatically — canvas sized, cloud and camera count loaded, geometry correct —
-  but the embedded browser used during development never fired the ResizeObserver the
-  renderer measures itself with, so nothing was ever seen rendered. Open
-  `/runs/<id>/stages/dense` in Chrome and look. `scripts/` has no equivalent; the
-  offline renders in §5 were made with a throwaway script.
-- **Rigs (§4.1).** `sequential_matcher` in COLMAP 4.2 has `expand_rig_images`, and
-  `feature_matcher` has `rig_verification` and `skip_image_pairs_in_same_frame`. The
-  slot naming that makes this possible is already in place.
-- **Sprite sheets.** The contact sheet loads individual thumbnails; fine at 241
-  frames, will need batching at 3600.
+- **Rigs (§4.1).** `sequential_matcher` in COLMAP 4.2 has `expand_rig_images`, and the
+  matcher has `rig_verification` and `skip_image_pairs_in_same_frame`. The slot naming
+  that makes this possible is already in place. This is the single biggest quality lever
+  available for the two-camera chair spin.
+- **Sprite sheets.** The contact sheet loads individual thumbnails; fine at 241 frames,
+  will need batching at 3600.
+- **Driving a stage headlessly** is useful for the long OpenMVS runs. The pattern that
+  worked: build a `JobRunner(registry)`, `runner.start()`, `runner.submit(run, sid)`, then
+  poll `run.load().stages[sid].state` — *not* `run.io.load()` (§6.17), and not `job.state`
+  (§6.18). Stop the web server first or it will overwrite you.
 
 ---
 
 ## 9. Known issues and loose ends
 
 - **`degrees_per_second` needs `capture.revolutions` set by hand.** It stays silent
-  otherwise, on purpose — a guessed revolution count produces a confident number
-  derived from nothing.
+  otherwise, on purpose — a guessed revolution count produces a confident number derived
+  from nothing.
 - **dHash is 8×8 and can be fooled by highly regular patterns.** Synthetic `testsrc2`
-  colour bars register as 100% duplicates because their 8×8 signature never changes,
-  even though full-resolution frames differ. Real footage is unaffected (cup-1: 6%).
-- **`opencv-5.0.0-windows.exe`** (186 MB) is still in the project root and unused —
-  OpenCV comes from pip. Safe to delete.
-- **Never poll `run.io.load()`** while a stage is running: it reads `project.json`
-  from disk, and an open handle breaks the writer's atomic replace on Windows
-  (§6.17). Use `run.load()`, which is cached, or the event bus.
-- **`openMVS - Source/`** is a source checkout at `develop`, ~7 months ahead of the
-  v2.4.0 prebuilt binaries actually in use. Do not mix scene files between versions.
-  Only needed if `CreateStructure`/`ExtractKeyframes` are ever wanted.
-- **The vocabulary tree in `data/` is unusable** and matching falls back to
-  exhaustive. Not a defect — see §6.11. The doctor reports it.
-- **COLMAP progress arrives in bursts** because glog block-buffers to a pipe (§6.14),
-  so the progress bar jumps rather than climbs. A quiet stage is not a stuck one.
-- **The dense stage refuses to run when masks are present** (§6.8), by design, until
-  mask undistortion exists. See §8.
-- **The 3D viewer has not been seen rendering in a normal browser.** Verified
-  programmatically only; see §8.
-- **`model_analyzer` contributed nothing on the cup run** —
-  `mean_observations_per_image` came back null, so the metrics fall back to the values
-  parsed from the text model. Harmless, and the numbers that matter are all present,
-  but the parser expects a format the binary may not be emitting.
-- **Sprite sheets are not implemented.** The contact sheet currently loads individual
-  thumbnails; fine at 241 frames, will need batching at 3600.
+  colour bars register as 100% duplicates because their 8×8 signature never changes. Real
+  footage is unaffected (cup-1: 6%).
+- **The vocabulary tree in `data/` is unusable** and matching falls back to exhaustive. Not
+  a defect — see §6.11. The doctor reports it.
+- **The dense stage refuses to run when masks are present** (§6.8), by design. See §8.
+- **`model_analyzer` contributed nothing on the cup run** — `mean_observations_per_image`
+  came back null, so the metrics fall back to values parsed from the text model. Harmless,
+  and every number that matters is present, but the parser expects a format the binary may
+  not be emitting.
+- **`opencv-5.0.0-windows.exe`** (186 MB) is still in the project root and unused — OpenCV
+  comes from pip. Safe to delete.
+- **`openMVS - Source/`** is a source checkout at `develop`, months ahead of the v2.4.0
+  prebuilt binaries actually in use. Do not mix scene files between versions, and do not
+  trust its option lists (§8, M11).
+- **Line endings are mixed** across the tree — some files CRLF, some LF, no
+  `.gitattributes`. Match whatever the file you are editing already uses.
 - **Blender is optional in the doctor** and only used at M12.
 
 ---
 
 ## 10. The stills path
 
-A run's source is either video clips or a folder of photographs, chosen at the top of
-the Clips page. Both produce the same thing:
+A run's source is either video clips or a folder of photographs, chosen at the top of the
+Clips page. Both produce the same thing:
 
 ```
 frames/<camera_group>/<slot:06d>.jpg   +   frames/frames.jsonl
 ```
 
-and nothing downstream knows which branch ran. It is an ingest branch inside the
-extract stage rather than a stage of its own, precisely so that stays true.
+and nothing downstream knows which branch ran. It is an ingest branch inside the extract
+stage rather than a stage of its own, precisely so that stays true.
 
-**Why it exists.** A folder of stills is the cleanest input this pipeline can be
-given: no rolling shutter, no variable frame rate, no display matrix, no inter-frame
-compression, and real EXIF. When a video run produces a bad model, a photo run
-separates "the reconstruction chain is wrong" from "extraction is feeding it bad
-frames" — which is the question you cannot otherwise answer without suspecting
-everything at once.
+**Why it exists.** A folder of stills is the cleanest input this pipeline can be given: no
+rolling shutter, no variable frame rate, no display matrix, no inter-frame compression,
+and real EXIF. When a video run produces a bad model, a photo run separates "the
+reconstruction chain is wrong" from "extraction is feeding it bad frames" — the question
+you otherwise cannot answer without suspecting everything at once.
 
 **Photographs are hardlinked, not copied or re-encoded**, whenever nothing needs to
-change. That is instant and costs no disk, but the real reason is EXIF: COLMAP seeds
-each camera's focal length from it and otherwise falls back to guessing
-`1.2 × max(width, height)`. On the cup video, which has no EXIF, that guess was
-2784 px and bundle adjustment pulled it down to 1683 px — a 40% correction it had to
-find for itself.
+change. That is instant and costs no disk, but the real reason is EXIF: COLMAP seeds each
+camera's focal length from it and otherwise falls back to guessing
+`1.2 × max(width, height)`. On the cup video, which has no EXIF, that guess was 2784 px
+and bundle adjustment had to pull it down to 1683 px on its own.
 
-Two things force a re-encode, and both are reported in the metrics as `reencoded`:
+Two things force a re-encode, both reported in the metrics as `reencoded`:
 
 - an image larger than `max_dimension`;
-- an image carrying an **EXIF orientation flag**, which is applied to the pixels and
-  then cleared. COLMAP does not honour that flag reliably, and a silently sideways
-  subset of a shoot is the kind of failure that costs an afternoon. EXIF is copied
-  across on both paths.
+- an image carrying an **EXIF orientation flag**, which is applied to the pixels and then
+  cleared. COLMAP does not honour that flag reliably, and a silently sideways subset of a
+  shoot is the kind of failure that costs an afternoon. EXIF is copied across on both
+  paths.
 
 **Ordering is natural, not lexical** — `IMG_9` precedes `IMG_10`. Sequential matching
 compares frames by index, so index order has to be viewpoint order; plain string sort
 scrambles it in a way nothing downstream can detect.
 
 **What photographs do not have is a clock.** `src_pts`, `timeline_time_s` and
-`sync_residual_s` are `null` in `frames.jsonl` rather than zero, and the timeline
-carries only `total_slots`. Writing 0.0 where there is no timestamp would put a number
-that means nothing into the one file every later stage reads. A run therefore cannot
-mix photo and video clips, and preflight refuses it: the shared slot clock that pairs
-two cameras instant-by-instant comes from video timestamps, and half an invented
-timeline is worse than none.
+`sync_residual_s` are `null` in `frames.jsonl` rather than zero, and the timeline carries
+only `total_slots`. Writing 0.0 where there is no timestamp would put a number that means
+nothing into the one file every later stage reads. A run therefore cannot mix photo and
+video clips, and preflight refuses it: the shared slot clock that pairs two cameras
+instant-by-instant comes from video timestamps, and half an invented timeline is worse
+than none.
 
-RAW and HEIC need a decoder that is not installed; the scanner names the files it
-could not read rather than skipping them quietly. `docs/capture-checklist.md` has the
-shooting guidance.
+RAW and HEIC need a decoder that is not installed; the scanner names the files it could
+not read rather than skipping them quietly. `docs/capture-checklist.md` has the shooting
+guidance.
