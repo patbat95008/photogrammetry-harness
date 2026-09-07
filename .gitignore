@@ -1,0 +1,119 @@
+# ============================================================================
+#  Photogrammetry Harness
+#
+#  The working tree is ~6 GB; the actual source is under 1 MB. Everything large
+#  here is either a vendored third-party binary, a virtual environment, or run
+#  output — all of it reproducible, none of it belonging in git.
+#
+#  Each vendored dependency below notes where to get it again. Versions in use
+#  are recorded in docs/HANDOVER.md.
+# ============================================================================
+
+# --- vendored reconstruction engines ---------------------------------------
+# tools/colmap-x64-windows-cuda/   COLMAP 4.2.0 CUDA build (~740 MB)
+#     https://github.com/colmap/colmap/releases
+# tools/OpenMVS_Windows_x64_CUDA/  OpenMVS v2.4.0 prebuilt CUDA binaries (~11 MB .7z)
+#     https://github.com/cdcseacave/openMVS/releases/download/v2.4.0/OpenMVS_Windows_x64_CUDA.7z
+#     Needs the MSVC 2022 x64 redistributable; CUDA comes from the driver, no toolkit required.
+/tools/
+
+# --- SAM 2 -----------------------------------------------------------------
+# Upstream checkout plus ~1.5 GB of model weights. Has its own .git, so tracking
+# it here would make it a submodule by accident.
+#     git clone https://github.com/facebookresearch/sam2
+#     bash sam2/checkpoints/download_ckpts.sh
+#     .venv/Scripts/python.exe -m pip install -e ./sam2 --no-build-isolation
+# The checkpoint<->config pairing is pinned in server/pgh/config.py — a mismatched
+# pair loads without raising and produces poor masks.
+/sam2/
+
+# --- OpenMVS source checkout -----------------------------------------------
+# Only needed for CreateStructure / ExtractKeyframes, which are not in the
+# prebuilt drop. Also carries its own .git.
+/openMVS - Source/
+
+# --- installers kept locally ------------------------------------------------
+*.exe
+*.7z
+*.msi
+*.zip
+
+# --- Python -----------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend --------------------------------------------------------
+node_modules/
+# Build output: launch.bat regenerates it from web/src when sources are newer.
+/web/dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# --- run data ---------------------------------------------------------------
+# Runs live in D:\pgh-runs by default (short path, off the system drive), but
+# ignore a local runs/ too in case runs_root is ever pointed back in-tree.
+/runs/
+*.mvs
+*.ply
+*.glb
+*.obj
+*.mtl
+*.stl
+
+# --- machine-local configuration --------------------------------------------
+# Tool path overrides and runs_root. Machine-specific by design.
+/data/tools.local.toml
+.env
+.env.local
+
+# --- tool droppings ---------------------------------------------------------
+# Every OpenMVS tool writes <Tool>-<timestamp>.log into its current working
+# directory on every invocation, including --help. The harness sets an explicit
+# cwd per stage, but a manual run from the project root will still litter.
+DensifyPointCloud-*.log
+ReconstructMesh-*.log
+RefineMesh-*.log
+TextureMesh-*.log
+InterfaceCOLMAP-*.log
+Interface*-*.log
+TransformScene-*.log
+*.log
+
+# --- scratch ----------------------------------------------------------------
+launch-out.txt
+launch-*.txt
+/scratch/
+*.tmp
+
+# --- source video -----------------------------------------------------------
+# Capture footage is gigabytes and belongs outside the repo.
+*.mp4
+*.mov
+*.m4v
+*.mkv
+*.insv
+*.mts
+
+# --- OS / editor ------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~

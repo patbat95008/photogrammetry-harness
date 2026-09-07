@@ -1,0 +1,18 @@
+# Normalise line endings so the launchers keep working on a fresh clone.
+* text=auto
+
+# Windows batch and PowerShell must be CRLF. A .bat checked out with LF can fail
+# in ways that look like a logic bug -- cmd mis-parses labels and continuations.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Keep shell scripts LF even when checked out on Windows.
+*.sh    text eol=lf
+
+# Binary assets git should not try to diff or normalise.
+*.jpg   binary
+*.png   binary
+*.webp  binary
+*.pt    binary
+*.mp4   binary
