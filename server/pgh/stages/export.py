@@ -273,17 +273,7 @@ class ExportStage(Stage):
         ctx.progress("committing", fraction=0.95)
         _commit(run_dir / "export", scratch)
 
-        artifacts: dict[str, str] = {"report": "export/report.json"}
-        for kind, name in (result.get("files") or {}).items():
-            artifacts[f"model_{kind}"] = f"export/{name}"
-        # An OBJ is three files and the other two are useless on their own: a mesh
-        # downloaded without its .mtl and its texture is an untextured mesh. They are
-        # recorded under their own prefix rather than as models, so the page can offer
-        # them without calling a material file a model.
-        for kind, name in (result.get("sidecars") or {}).items():
-            artifacts[f"sidecar_{kind}"] = f"export/{name}"
-        if result.get("turntable_frames"):
-            artifacts["turntable"] = "export/turntable"
+        artifacts = _artifacts(result)
 
         # Blender reports the factor it actually applied, which for a measured dimension
         # is the only place it could have been worked out.
@@ -363,6 +353,24 @@ def _scale(
         return factor, "baseline"
 
     return None, "manual"
+
+
+def _artifacts(result: dict) -> dict[str, str]:
+    """Map what Blender says it wrote onto artifact keys.
+
+    An OBJ is three files, and the other two are useless on their own: a mesh
+    downloaded without its .mtl and its texture is an untextured mesh. Sidecars get
+    their own prefix rather than being called models, so the page can offer them
+    without listing a material file beside GLB and STL as though it were one.
+    """
+    artifacts: dict[str, str] = {"report": "export/report.json"}
+    for kind, name in (result.get("files") or {}).items():
+        artifacts[f"model_{kind}"] = f"export/{name}"
+    for kind, name in (result.get("sidecars") or {}).items():
+        artifacts[f"sidecar_{kind}"] = f"export/{name}"
+    if result.get("turntable_frames"):
+        artifacts["turntable"] = "export/turntable"
+    return artifacts
 
 
 def _commit(target: Path, scratch: Path) -> None:

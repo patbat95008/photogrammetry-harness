@@ -248,3 +248,55 @@ def test_a_malformed_result_line_is_skipped_not_fatal() -> None:
 
 def test_a_mention_of_the_prefix_mid_line_is_not_a_result() -> None:
     assert blender.parse_result(["writing PGH_RESULT to the log"]) is None
+
+
+# -- what a download actually needs -------------------------------------------
+
+
+def test_an_obj_is_offered_with_its_material_and_texture():
+    """A .obj on its own is an untextured mesh. All three files or none."""
+    from pgh.stages.export import _artifacts
+
+    artifacts = _artifacts(
+        {
+            "files": {"glb": "model.glb", "obj": "model.obj", "stl": "model.stl"},
+            "sidecars": {"obj_material": "model.mtl", "obj_texture": "atlas.png"},
+            "turntable_frames": 36,
+        }
+    )
+
+    assert artifacts["model_obj"] == "export/model.obj"
+    assert artifacts["sidecar_obj_material"] == "export/model.mtl"
+    assert artifacts["sidecar_obj_texture"] == "export/atlas.png"
+
+
+def test_a_material_is_not_recorded_as_a_model():
+    """The page lists models by the model_ prefix, so a .mtl there reads as one."""
+    from pgh.stages.export import _artifacts
+
+    artifacts = _artifacts(
+        {"files": {"glb": "model.glb"}, "sidecars": {"obj_material": "model.mtl"}}
+    )
+
+    models = [k for k in artifacts if k.startswith("model_")]
+    assert models == ["model_glb"]
+
+
+def test_a_glb_only_export_records_no_sidecars():
+    from pgh.stages.export import _artifacts
+
+    artifacts = _artifacts({"files": {"glb": "model.glb"}, "turntable_frames": 0})
+
+    assert not any(k.startswith("sidecar_") for k in artifacts)
+    assert "turntable" not in artifacts
+
+
+def test_the_report_carries_the_size_the_viewer_has_to_gate_on():
+    """Blender writes normals the mesh stage's file does not, so an export is much
+    bigger than the mesh it came from -- 68 MB against 23 MB on cup-1. Without this
+    the viewer's 40 MB prompt cannot fire on the page that most needs it."""
+    metrics, _warnings = _summarise(
+        ExportParams(), result(), None, "none", 0.04, [0.0, 0.0, 1.0], 67_902_144
+    )
+
+    assert metrics["model_bytes"] == 67_902_144

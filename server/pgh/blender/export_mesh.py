@@ -330,16 +330,17 @@ def export(obj, directory, stem, formats):
             up_axis="Z",
         )
         written["obj"] = os.path.basename(path)
-        # Discover what came with it rather than predicting the names: the exporter
-        # chooses the .mtl name, and path_mode='COPY' chooses the texture's.
+        # Discover what came with it rather than predicting names. The exporter
+        # chooses the .mtl name and path_mode='COPY' chooses the texture's, and the
+        # texture's is derived from the image's name inside the .blend rather than
+        # from the stem -- so read the map_Kd line rather than guessing at it. Both
+        # files have to be recorded: an .obj without them opens untextured.
         for name in sorted(os.listdir(directory)):
-            lower = name.lower()
-            if name == written["obj"]:
-                continue
-            if lower.endswith(".mtl"):
+            if name != written["obj"] and name.lower().endswith(".mtl"):
                 sidecars["obj_material"] = name
-            elif lower.endswith((".png", ".jpg", ".jpeg")) and stem in name:
-                sidecars["obj_texture"] = name
+                for line in open(os.path.join(directory, name), encoding="utf-8"):
+                    if line.strip().startswith("map_Kd "):
+                        sidecars["obj_texture"] = line.strip().split(None, 1)[1]
     if formats.get("stl"):
         path = os.path.join(directory, stem + ".stl")
         # STL carries geometry only: no colour, no units, no way to say what size it is.
