@@ -253,7 +253,7 @@ confidence 363.
 | Select | 241 → **183** kept (43 too soft, 15 duplicates) | 3.1 s |
 | Align | **183 of 183 registered**, one model, 50,189 points | 11m 52s |
 | Dense | **738,015 points**, 4,033 per view, 2.6 GB of depth maps reclaimed | 3m 47s |
-| Mesh | **497,926 triangles** over 249,022 vertices, textured to one 4096² atlas | 4m 52s |
+| Mesh | **497,926 triangles** over 249,022 vertices, textured to one 4096² atlas | 4m 55s |
 | Export | cleaned to **495,490** in one shell, stood up, GLB + STL + 36 turntable frames | 16.3 s |
 
 Align in detail: mean reprojection error **1.162 px**, mean track length **6.04**, a
@@ -521,6 +521,29 @@ applied `capture.flip_x` and baked the orientation into the file. Offering it ag
 an upright model upside down, and because `flip_x` is in that stage's fingerprint, merely
 looking at it marks the export stale. `MeshViewer` takes `allowFlip`, and `ExportPage`
 passes `false`.
+
+**6.27 TextureMesh's seam levelling blacks out the interior of every texture patch.**
+Both levelling passes are on by OpenMVS's default, and on the meshes this pipeline
+produces they do not smooth the texture — they zero it. The tell is that the atlas still
+looks plausible: each patch keeps the photograph in the *padding* dilated around it, and
+only the interior, which is the part every face actually samples, goes black. So the
+model renders as a black surface webbed with thin coloured lines, which reads as a
+texturing failure of some deeper kind.
+
+Measured on the cup mesh, as the fraction of non-empty atlas pixels that are pure black:
+
+| `--global-seam-leveling` / `--local-seam-leveling` | black |
+|---|---|
+| `1` / `1` — OpenMVS's default | **49.1%** |
+| `0` / `1` | 37.3% |
+| `0` / `0` | **0.9%** |
+
+Local levelling is the larger offender, but neither is safe here, so `MeshParams` exposes
+both and defaults **both off** — against the engine's own default, which is unusual enough
+to want the numbers written down. A patchy texture is worth incomparably more than a black
+one. Suspicion is that a mesh carrying 10,848 tiny patches is what breaks the solve, so on
+a clean subject these may be worth turning back on; the parameters are there, and the
+check is the atlas, not the render.
 
 ## 7. The smoke test: `cup-1`
 

@@ -27,6 +27,14 @@ of ``-o`` plus ``--export-type``, so the extension is decided by a different fla
 the one that names the file -- and the ``.mvs`` that ``-o`` appears to ask for is never
 written at all for a scene loaded in interface format. Nothing here may chain on it.
 
+**Seam levelling is off, against the engine's own default.** Both of TextureMesh's
+levelling passes zero the interior of each texture patch on the meshes this pipeline
+produces -- the padding around each patch keeps the photograph, so the atlas looks
+plausible until you notice every face samples the black middle. Measured on the cup mesh:
+49% of the atlas content pure black with the shipped defaults, 37% with only local
+levelling, 1% with both off. A patchy texture is worth far more than a black one, so both
+default off and say why.
+
 **Progress cannot come from percentages.** These tools emit statistics with percent
 signs in them and no marching percentage at all, and TextureMesh spent four minutes on
 a single phase of the cup run without writing one line. So progress is a table of phase
@@ -232,6 +240,24 @@ class MeshParams(StageParams):
             "0 is full resolution."
         ),
     )
+    global_seam_leveling: bool = Field(
+        False,
+        description=(
+            "Even out brightness across the whole texture before baking. OpenMVS ships "
+            "this on, and on this pipeline's meshes it destroys the texture rather than "
+            "improving it: on the cup mesh it left 49% of the atlas content pure black, "
+            "against 1% with both levelling passes off. Turn it on only if the texture "
+            "comes out visibly patchy and check the result."
+        ),
+    )
+    local_seam_leveling: bool = Field(
+        False,
+        description=(
+            "Blend colour across the borders between texture patches. Off for the same "
+            "reason as the setting above, and it is the larger of the two offenders: "
+            "with it on and global levelling off, 37% of the atlas still came back black."
+        ),
+    )
     max_texture_size: int = Field(
         8192,
         ge=1024,
@@ -397,6 +423,8 @@ class MeshStage(Stage):
                         mesh_file=surface,
                         output_file=scratch / f"mesh_textured.{params.export_type}",
                         resolution_level=params.texture_resolution_level,
+                        global_seam_leveling=params.global_seam_leveling,
+                        local_seam_leveling=params.local_seam_leveling,
                         max_texture_size=params.max_texture_size,
                         export_type=params.export_type,
                         working_folder=scratch,

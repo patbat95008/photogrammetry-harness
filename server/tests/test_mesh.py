@@ -291,3 +291,24 @@ def test_metrics_report_the_ratio_worth_sanity_checking(manifest) -> None:
     """Faces per thousand dense points. The cup ran at 675, which is the shape to expect."""
     metrics, _ = summarise(manifest, MeshParams(), 497_926)
     assert metrics["faces_per_thousand_points"] == pytest.approx(674.7, abs=0.5)
+
+
+# -- seam levelling ----------------------------------------------------------
+
+
+def test_seam_levelling_is_off_by_default() -> None:
+    """Against OpenMVS's own default, because on this pipeline's meshes it blacks out
+    the interior of every texture patch: 49% of the cup atlas came back pure black with
+    the shipped defaults and 1% with both passes off. The failure is silent -- the
+    padding around each patch keeps the photograph, so the atlas looks plausible while
+    every face samples the black middle.
+    """
+    params = MeshParams()
+    assert params.global_seam_leveling is False
+    assert params.local_seam_leveling is False
+
+
+def test_seam_levelling_can_still_be_asked_for() -> None:
+    """It is the right thing on a clean subject; it is a choice, not a removal."""
+    params = MeshParams(global_seam_leveling=True, local_seam_leveling=True)
+    assert params.global_seam_leveling and params.local_seam_leveling
