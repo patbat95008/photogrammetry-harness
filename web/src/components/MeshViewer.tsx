@@ -65,6 +65,26 @@ function extentOf(object: THREE.Object3D): Extent {
   return robustExtent(new Float32Array(merged));
 }
 
+/**
+ * Give the geometry normals if it arrived without any.
+ *
+ * OpenMVS writes its glTF with POSITION and TEXCOORD_0 and nothing else -- it marks the
+ * material KHR_materials_unlit, so as far as the file is concerned normals would never
+ * be read. They are exactly what the matte and wireframe modes need, though, and a lit
+ * material with no normals to shade does not fail: it renders a flat black silhouette,
+ * which reads as a catastrophically bad reconstruction rather than as a missing
+ * attribute. Computing them here costs one pass and only happens when they are absent
+ * (the export stage's mesh comes back from Blender already carrying them).
+ */
+function ensureNormals(object: THREE.Object3D) {
+  object.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.isMesh && mesh.geometry && !mesh.geometry.hasAttribute("normal")) {
+      mesh.geometry.computeVertexNormals();
+    }
+  });
+}
+
 /** Free the GPU memory a loaded mesh holds. An unfreed atlas is ~268 MB of VRAM. */
 function disposeObject(object: THREE.Object3D | null) {
   object?.traverse((child) => {
@@ -139,11 +159,20 @@ export default function MeshViewer({
   runId,
   sizeBytes,
   faces,
+  allowFlip = true,
   height = 560,
 }: {
   meshUrl: string;
   format: "glb" | "gltf" | "obj" | "ply";
   runId?: string;
+  /**
+   * Whether turning the model over is still an open question. It is for the mesh, which
+   * is in COLMAP's arbitrary frame; it is not for an export, which has already had the
+   * orientation applied to it. Offering it there would turn an upright model upside down
+   * and, because flip_x is in the export stage's fingerprint, mark the export stale for
+   * having looked at it.
+   */
+  allowFlip?: boolean;
   /** Mesh plus texture. Above the threshold the viewer asks before loading. */
   sizeBytes?: number;
   faces?: number;
@@ -154,7 +183,8 @@ export default function MeshViewer({
   const [loading, setLoading] = useState(false);
   const [shading, setShading] = useState<Shading>("textured");
   const [dark, setDark] = useState(true);
-  const [flipped, toggleFlip] = useFlip(runId);
+  const [storedFlip, toggleFlip] = useFlip(allowFlip ? runId : undefined);
+  const flipped = allowFlip && storedFlip;
   const [wrapRef, ready] = useSizedRef();
 
   const heavy = (sizeBytes ?? 0) > ASK_FIRST_BYTES;
@@ -177,6 +207,7 @@ export default function MeshViewer({
         disposeObject(loaded);
         return;
       }
+      ensureNormals(loaded);
       setObject(loaded);
       setLoading(false);
     };
@@ -206,10 +237,7 @@ export default function MeshViewer({
     } else {
       new PLYLoader().load(
         meshUrl,
-        (geometry) => {
-          geometry.computeVertexNormals();
-          done(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial()));
-        },
+        (geometry) => done(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial())),
         undefined,
         fail,
       );
@@ -252,17 +280,19 @@ export default function MeshViewer({
             <option value="wireframe">Wireframe</option>
           </select>
         </label>
-        <label
-          className="cloud-control"
-          title="Turn the model over. Saved with the run, and used when it is exported."
-        >
-          <input
-            type="checkbox"
-            checked={flipped}
-            onChange={(e) => toggleFlip(e.target.checked)}
-          />
-          Flip
-        </label>
+        {allowFlip && (
+          <label
+            className="cloud-control"
+            title="Turn the model over. Saved with the run, and used when it is exported."
+          >
+            <input
+              type="checkbox"
+              checked={flipped}
+              onChange={(e) => toggleFlip(e.target.checked)}
+            />
+            Flip
+          </label>
+        )}
         <label className="cloud-control">
           <input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} />
           Dark

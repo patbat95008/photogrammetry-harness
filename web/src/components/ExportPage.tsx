@@ -99,6 +99,7 @@ export default function ExportPage() {
                 format="glb"
                 runId={runId}
                 faces={Number(metrics.faces_out ?? 0) || undefined}
+                allowFlip={false}
                 height={480}
               />
             )}

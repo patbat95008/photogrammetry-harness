@@ -502,6 +502,26 @@ every number in the report — 7 components, 2,436 faces dropped, planarity 0.04
 entirely reasonable. Nothing but looking at it would have caught it, which is what the
 orthographic top/front/side check in §5 is for.
 
+**6.26 OpenMVS writes no vertex normals, and a lit material without them renders black.**
+The glTF from `TextureMesh` carries `POSITION` and `TEXCOORD_0` and nothing else — it
+marks the material `KHR_materials_unlit`, so from the file's point of view normals would
+never be read. Feed that geometry to a `MeshStandardMaterial` and it does not fail or
+warn: it draws a flat black silhouette, which reads as a catastrophically bad
+reconstruction rather than as a missing attribute. Measured on the cup mesh: 30,578
+pixels covered, **0 of them lit**, mean brightness 0. After `computeVertexNormals()`,
+the same 30,578 pixels, 30,478 lit, mean brightness 158.
+
+`MeshViewer:ensureNormals` computes them on load when they are absent, which is the mesh
+stage's file but not the export stage's — Blender writes normals on the way out, which is
+why the export page looked shaded while the mesh page did not. That asymmetry is the tell
+if this ever comes back.
+
+**Related: an export must not be offered the Flip toggle.** The export stage has already
+applied `capture.flip_x` and baked the orientation into the file. Offering it again turns
+an upright model upside down, and because `flip_x` is in that stage's fingerprint, merely
+looking at it marks the export stale. `MeshViewer` takes `allowFlip`, and `ExportPage`
+passes `false`.
+
 ## 7. The smoke test: `cup-1`
 
 **Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:**
