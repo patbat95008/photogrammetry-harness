@@ -78,8 +78,17 @@ CAPTURE_NOTES: dict[CaptureMode, str] = {
 RUNAWAY_AREA_WARN = 0.75
 #: Below this the tracker has probably lost the subject rather than found a small one.
 THIN_AREA_WARN = 0.02
-#: Frame-to-frame agreement below this is a track that jumped rather than moved.
-DRIFT_IOU_WARN = 0.8
+#: A frame is called a jump when its agreement with the previous frame falls below
+#: this fraction of the take's *own* median agreement. Relative rather than absolute
+#: because the typical figure is a property of the capture, not of the tracker:
+#: measured on cup-1, a handheld orbit sampled at 4 fps with thin brushes in the mug,
+#: the median is 0.74 and a fixed 0.8 called two frames in three a failure. A slower
+#: orbit or a chunkier subject sits near 0.95. What is worth reporting is a frame that
+#: disagrees with its neighbour far more than the rest of the take does.
+DRIFT_RELATIVE = 0.5
+#: ...but never demand more agreement than this, so a take that is drifting throughout
+#: cannot quietly raise its own bar until nothing looks wrong.
+DRIFT_IOU_CEILING = 0.8
 
 
 class MaskPrompt(BaseModel):
@@ -716,8 +725,17 @@ def _summarise(
     areas = [r["area_fraction"] for r in records]
     empty = [r for r in records if r["empty"]]
     border = [r for r in records if r["touches_border"]]
+    agreements = sorted(r["iou_prev"] for r in records if r["iou_prev"] is not None)
+    median = agreements[len(agreements) // 2] if agreements else None
+    drift_floor = (
+        min(DRIFT_IOU_CEILING, median * DRIFT_RELATIVE) if median is not None else None
+    )
     drifted = [
-        r for r in records if r["iou_prev"] is not None and r["iou_prev"] < DRIFT_IOU_WARN
+        r
+        for r in records
+        if drift_floor is not None
+        and r["iou_prev"] is not None
+        and r["iou_prev"] < drift_floor
     ]
     mean_area = round(sum(areas) / len(areas), 5) if areas else 0.0
 
@@ -735,6 +753,8 @@ def _summarise(
         "empty_masks": len(empty),
         "border_touching": len(border),
         "drifting_frames": len(drifted),
+        "median_agreement": round(median, 4) if median is not None else None,
+        "drift_threshold": round(drift_floor, 4) if drift_floor is not None else None,
         "views_written": views,
         "frames_transcoded": transcoded,
         "seconds_per_frame": round(elapsed / len(records), 3) if records else None,
@@ -782,9 +802,10 @@ def _summarise(
         warnings.append(
             f"the mask changed shape abruptly between neighbouring frames "
             f"{len(drifted)} times, first at {first['camera_group']}/{first['slot']:06d}. "
-            f"Neighbouring frames are a fraction of a second apart, so the track "
-            f"jumped rather than followed -- usually onto something behind the "
-            f"subject. Look at those frames in the review strip before trusting them."
+            f"Frame to frame this take usually agrees with itself {median:.0%}, and "
+            f"these fell below {drift_floor:.0%} -- so the track jumped rather than "
+            f"followed, usually onto something behind the subject. Look at those "
+            f"frames in the review strip before trusting them."
         )
     if manifest.capture.mode is CaptureMode.CAMERA_ORBITS:
         warnings.append(

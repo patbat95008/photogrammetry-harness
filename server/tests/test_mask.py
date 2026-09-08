@@ -633,3 +633,44 @@ def test_masking_a_chair_spin_does_not_warn():
     _metrics, warnings = _summary(_records(), mode=CaptureMode.SUBJECT_ROTATES)
 
     assert not any("rigid with the subject" in w for w in warnings)
+
+
+def test_normal_frame_to_frame_movement_is_not_called_drift():
+    """Measured on cup-1: a handheld orbit at 4 fps agrees with itself about 0.74.
+
+    A fixed threshold of 0.8 called two frames in three a failure there, which is a
+    warning nobody can act on. The bar is a fraction of the take's own median.
+    """
+    records = _records(count=20, iou_prev=0.74)
+
+    _metrics, warnings = _summary(records)
+
+    assert not any("jumped rather than followed" in w for w in warnings)
+
+
+def test_a_jump_is_still_caught_in_a_take_that_agrees_closely():
+    records = _records(count=20, iou_prev=0.97)
+    records[9]["iou_prev"] = 0.30
+
+    _metrics, warnings = _summary(records)
+
+    assert any("jumped rather than followed" in w for w in warnings)
+
+
+def test_a_take_that_drifts_throughout_cannot_raise_its_own_bar():
+    """Without the ceiling, a uniformly terrible take would report nothing wrong."""
+    from pgh.stages.mask import DRIFT_IOU_CEILING
+
+    records = _records(count=20, iou_prev=0.99)
+    records[5]["iou_prev"] = 0.70
+
+    metrics, _warnings = _summary(records)
+
+    assert metrics["drift_threshold"] <= DRIFT_IOU_CEILING
+
+
+def test_the_threshold_is_reported_so_the_review_strip_can_use_it():
+    metrics, _warnings = _summary(_records(count=20, iou_prev=0.8))
+
+    assert metrics["median_agreement"] == 0.8
+    assert metrics["drift_threshold"] == pytest.approx(0.4)
