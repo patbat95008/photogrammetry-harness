@@ -206,27 +206,71 @@ def model_analyzer(*, path: Path) -> list[str | Path]:
     return argv + LOG_FLAGS
 
 
+@dataclass(frozen=True, slots=True)
+class UndistortGeometry:
+    """Every ``image_undistorter`` flag that changes where a pixel ends up.
+
+    Masks are undistorted in a second pass (HANDOVER 6.8) and the two passes have to
+    agree exactly, or the mask lands a pixel or two away from the image it belongs to
+    -- invisible everywhere except at the boundary, and the boundary is where ears and
+    hair are.
+
+    Passing one frozen object to both calls is the only version of "identical" that a
+    later edit cannot quietly break. Remembering to keep two call sites in step is
+    not: this builder used to emit only ``max_image_size`` and rely on the binary's
+    defaults for the rest, which is identical-by-omission and stays identical only
+    until someone passes one of the others at one call site.
+
+    ``jpeg_quality`` is deliberately NOT here. It changes how the result is encoded,
+    not where anything lands, so the mask pass raises it without breaking the
+    agreement this class exists to enforce.
+    """
+
+    max_image_size: int = -1
+    blank_pixels: float = 0.0
+    min_scale: float = 0.2
+    max_scale: float = 2.0
+    roi_min_x: float = 0.0
+    roi_min_y: float = 0.0
+    roi_max_x: float = 1.0
+    roi_max_y: float = 1.0
+
+
 def image_undistorter(
     *,
     image_path: Path,
     input_path: Path,
     output_path: Path,
-    max_image_size: int = -1,
+    geometry: UndistortGeometry | None = None,
     output_type: str = "COLMAP",
+    jpeg_quality: int | None = None,
 ) -> list[str | Path]:
     """Rectify images so OpenMVS sees a pinhole camera.
 
-    ``max_image_size`` and the ROI flags must be recorded and reused verbatim if
-    masks are ever undistorted in a second pass (HANDOVER 6.8) -- drifting flags
-    between the two produce masks that are subtly wrong exactly where ears and hair
-    live.
+    Every geometry flag is emitted explicitly, including the ones that match the
+    binary's own defaults, so that two passes built from the same
+    :class:`UndistortGeometry` are byte-identical in the part that matters rather than
+    identical only because neither mentioned the flag.
     """
+    geometry = geometry or UndistortGeometry()
     argv: list[str | Path] = [colmap_path(), "image_undistorter"]
     _flag(argv, "--image_path", image_path)
     _flag(argv, "--input_path", input_path)
     _flag(argv, "--output_path", output_path)
     _flag(argv, "--output_type", output_type)
-    _flag(argv, "--max_image_size", max_image_size)
+    for name in (
+        "max_image_size",
+        "blank_pixels",
+        "min_scale",
+        "max_scale",
+        "roi_min_x",
+        "roi_min_y",
+        "roi_max_x",
+        "roi_max_y",
+    ):
+        _flag(argv, f"--{name}", getattr(geometry, name))
+    if jpeg_quality is not None:
+        _flag(argv, "--jpeg_quality", jpeg_quality)
     return argv + LOG_FLAGS
 
 

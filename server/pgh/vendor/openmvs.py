@@ -192,6 +192,8 @@ def densify_point_cloud(
     remove_dmaps: bool = False,
     max_threads: int = 0,
     working_folder: Path | None = None,
+    ignore_mask_label: int | None = None,
+    mask_path: Path | None = None,
 ) -> list[str | Path]:
     """Estimate per-view depth maps and fuse them into a dense point cloud.
 
@@ -200,7 +202,21 @@ def densify_point_cloud(
 
     ``remove_dmaps`` is left off by default and the depth maps are deleted by the
     stage instead, so the count and size can be reported before they go.
+
+    **Masks arrive as siblings, never through** ``-m``. The tool's own help says
+    ``-m`` is "path to folder containing mask images with '.mask.png' extension" --
+    one flat folder -- and it builds each name with ``Util::getFileName``, which
+    strips the directory *and* the extension. Two camera groups sharing the slot
+    clock (HANDOVER 4.1) therefore both map ``<group>/000042.jpg`` onto
+    ``000042.mask.png``, and one camera's mask is silently applied to the other. It
+    looks fine on a single-camera run and is wrong on every rig. So this builder
+    refuses ``mask_path`` outright, and masks are written beside each undistorted
+    image instead, which ``ignore_mask_label`` reads per-image.
+
+    ``ignore_mask_label`` must be >= 0 or no mask is read at all: -1 is the default
+    and means "estimate a lens-distortion mask", not "use the files on disk".
     """
+    _refuse_mask_path(mask_path)
     argv: list[str | Path] = [
         _tool("openmvs_densify"),
         "-i", input_file,
@@ -216,9 +232,25 @@ def densify_point_cloud(
         "--remove-dmaps", "1" if remove_dmaps else "0",
         "--max-threads", str(max_threads),
     ]
+    if ignore_mask_label is not None:
+        argv += ["--ignore-mask-label", str(ignore_mask_label)]
     if working_folder is not None:
         argv += ["-w", working_folder]
     return argv
+
+
+def _refuse_mask_path(mask_path: Path | None) -> None:
+    if mask_path is None:
+        return
+    raise ValueError(
+        "DensifyPointCloud's -m/--mask-path takes one flat folder and names each "
+        "mask with Util::getFileName, which strips the directory and the extension. "
+        "Two camera groups share the slot clock, so cam_high/000042.jpg and "
+        "cam_eye/000042.jpg both resolve to 000042.mask.png and one camera's mask is "
+        "applied to the other -- silently, and only on a rig, so a single-camera test "
+        "run looks perfect. Write <stem>.mask.png beside each undistorted image and "
+        "pass ignore_mask_label instead."
+    )
 
 
 def _check_export_type(value: str, allowed: tuple[str, ...], tool: str) -> None:

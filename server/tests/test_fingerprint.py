@@ -500,3 +500,65 @@ def test_the_orientation_flip_invalidates_nothing(manifest, registry):
     before = compute_fingerprints(manifest, registry)
     manifest.capture.flip_x = not manifest.capture.flip_x
     assert compute_fingerprints(manifest, registry) == before
+
+
+# -- masking, and the two stages that read it --------------------------------
+
+
+def _run_with_masks(masks: bool):
+    """A manifest whose mask stage either ran or was deliberately skipped."""
+    manifest = RunManifest(run_id="cup")
+    record = manifest.stages[StageId.MASK]
+    if masks:
+        record.state = StageState.DONE
+        record.artifacts = {
+            "masks": "mask/canonical",
+            "masks_colmap": "mask/colmap",
+            "masks_openmvs": "mask/openmvs",
+        }
+    else:
+        record.state = StageState.SKIPPED
+    return manifest
+
+
+def test_producing_masks_invalidates_the_alignment():
+    """Skipping and running are identical to the mask stage's own fingerprint --
+    it hashes the same params either way -- so alignment has to read the artifact
+    or un-skipping masking would leave a background-locked model looking fresh."""
+    from pgh.stages.sparse import SparseStage
+
+    skipped = SparseStage().external_inputs(_run_with_masks(False))["masks"]
+    masked = SparseStage().external_inputs(_run_with_masks(True))["masks"]
+
+    assert skipped == "none"
+    assert masked != skipped
+
+
+def test_the_dense_stage_no_longer_refuses_a_masked_run():
+    """HANDOVER 6.8 is implemented: masks are undistorted rather than rejected."""
+    from pgh.stages.dense import DenseStage
+
+    manifest = _run_with_masks(True)
+    manifest.stages[StageId.SPARSE].state = StageState.DONE
+    manifest.stages[StageId.SPARSE].artifacts = {"model_best": "sparse/model/0"}
+    manifest.stages[StageId.SPARSE].metrics = {"images_registered": 183}
+
+    problems = DenseStage().preflight(manifest)
+
+    assert not any("not implemented" in p for p in problems)
+    assert not any("Skip the mask stage" in p for p in problems)
+
+
+def test_the_dense_stage_still_refuses_masks_it_cannot_feed_to_openmvs():
+    """A mask stage that predates the OpenMVS naming recorded no usable view."""
+    from pgh.stages.dense import DenseStage
+
+    manifest = _run_with_masks(True)
+    manifest.stages[StageId.MASK].artifacts = {"masks": "mask/canonical"}
+    manifest.stages[StageId.SPARSE].state = StageState.DONE
+    manifest.stages[StageId.SPARSE].artifacts = {"model_best": "sparse/model/0"}
+    manifest.stages[StageId.SPARSE].metrics = {"images_registered": 183}
+
+    problems = DenseStage().preflight(manifest)
+
+    assert any("OpenMVS-named view" in p for p in problems)

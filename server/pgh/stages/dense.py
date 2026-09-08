@@ -18,19 +18,33 @@ nine tenths of what a run consumes and are never read again after fusion, so the
 deleted by default -- but counted and measured first, because "freed 41 GB" is worth
 knowing and a silent deletion is not.
 
-**Masks are refused rather than ignored.** HANDOVER 6.8: masks have to be undistorted
-in a second ``image_undistorter`` pass using flags identical to the first, then
-thresholded. That path cannot be tested until the mask stage exists, and a dense
-stage that quietly dropped masks would produce a model that is wrong precisely around
-ears and hair -- the places you would look last and trust most. So preflight blocks.
+**Masks go through a second undistortion pass** (HANDOVER 6.8). COLMAP does not
+undistort masks, but OpenMVS consumes undistorted images, so the masks are staged
+under the image names, rectified by a second ``image_undistorter`` call sharing one
+frozen ``UndistortGeometry`` with the first, and thresholded at 127. The shared object
+is the point: two call sites that merely happen to pass the same flags stay identical
+only until someone edits one of them, and a mask rectified even slightly differently
+is wrong precisely around ears and hair -- the places you would look last and trust
+most. ``_check_mask_siblings`` then looks at the result, because a smeared mask writes
+and runs without complaint.
+
+The thresholded masks are written **beside** each undistorted image as
+``<stem>.mask.png`` and read via ``--ignore-mask-label 0``. Not through
+``-m/--mask-path``: that flattens every camera group into one directory keyed on the
+bare filename, and the shared slot clock guarantees ``cam_high/000042`` and
+``cam_eye/000042`` collide there -- which looks perfect on a single-camera run and
+silently applies one camera's masks to the other on a rig.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import psutil
 from pydantic import Field
 
@@ -136,13 +150,17 @@ class DenseStage(Stage):
 
         mask = manifest.stages[StageId.MASK]
         if mask.state is not StageState.SKIPPED and mask.artifacts.get("masks"):
-            problems.append(
-                "this run has masks, and undistorting them is not implemented yet "
-                "(see HANDOVER 6.8: they need a second image_undistorter pass with "
-                "flags identical to the first, then a threshold at 127). Running "
-                "without that would silently reconstruct the masked-out background "
-                "back into the model. Skip the mask stage, or implement 6.8 first."
-            )
+            # Masks are used now (HANDOVER 6.8 is implemented), so what matters is
+            # that the files are actually there. A recorded artifact whose directory
+            # has gone is the case that would otherwise reconstruct the background
+            # back in without saying anything.
+            views = mask.artifacts.get("masks_openmvs")
+            if not views:
+                problems.append(
+                    "the mask stage ran before this run understood how to feed masks "
+                    "to OpenMVS, so it recorded no OpenMVS-named view. Re-run the "
+                    "mask stage."
+                )
         return problems
 
     def run(self, ctx: StageContext) -> StageResult:
@@ -158,6 +176,13 @@ class DenseStage(Stage):
         peak = PeakMemory()
         peak.start()
         try:
+            # One geometry object, used by both passes. HANDOVER 6.8: if the mask
+            # pass rectifies even slightly differently, the mask lands beside the
+            # image it belongs to rather than on it.
+            geometry = colmap.UndistortGeometry(
+                max_image_size=params.undistort_max_image_size
+            )
+
             ctx.progress("undistorting images", fraction=0.02)
             run_tool(
                 ctx,
@@ -165,12 +190,42 @@ class DenseStage(Stage):
                     image_path=images_dir,
                     input_path=model_dir,
                     output_path=undistorted,
-                    max_image_size=params.undistort_max_image_size,
+                    geometry=geometry,
                 ),
                 cwd=scratch,
                 label="colmap image_undistorter",
             )
             _check_undistorted(undistorted)
+
+            mask_source = _mask_source(run_dir, ctx.manifest)
+            masked = mask_source is not None
+            if masked:
+                ctx.progress("undistorting masks", fraction=0.10)
+                farm = scratch / "mask_images"
+                staged = _build_mask_farm(mask_source, images_dir, farm)
+                ctx.logger.info("staged %d masks for undistortion", staged)
+                run_tool(
+                    ctx,
+                    colmap.image_undistorter(
+                        image_path=farm,
+                        input_path=model_dir,
+                        output_path=scratch / "undistorted_masks",
+                        geometry=geometry,
+                        # Not geometry, so it may differ: a crisp mask edge costs
+                        # nothing and the threshold below absorbs the rest.
+                        jpeg_quality=100,
+                    ),
+                    cwd=scratch,
+                    label="colmap image_undistorter (masks)",
+                )
+                written = _threshold_masks(
+                    scratch / "undistorted_masks" / "images",
+                    undistorted / "images",
+                )
+                ctx.logger.info("wrote %d sibling .mask.png files", written)
+                _check_mask_siblings(undistorted / "images")
+                shutil.rmtree(farm, ignore_errors=True)
+                shutil.rmtree(scratch / "undistorted_masks", ignore_errors=True)
 
             scene = scratch / "scene.mvs"
             ctx.progress("converting the scene", fraction=0.15)
@@ -203,6 +258,9 @@ class DenseStage(Stage):
                     min_resolution=params.min_resolution,
                     number_views=params.number_views,
                     number_views_fuse=params.number_views_fuse,
+                    # >= 0 or no mask is read at all: -1 means "estimate a lens
+                    # distortion mask", not "use the files next to the images".
+                    ignore_mask_label=0 if masked else None,
                 ),
                 cwd=scratch,
                 tool="DensifyPointCloud",
@@ -242,7 +300,8 @@ class DenseStage(Stage):
         _commit(run_dir / "dense", scratch)
 
         metrics, warnings = _summarise(
-            ctx.manifest, params, total_points, preview_points, depth_maps, freed, peak.peak_gb
+            ctx.manifest, params, total_points, preview_points, depth_maps, freed,
+            peak.peak_gb, masked=masked,
         )
         return StageResult(
             artifacts={
@@ -283,6 +342,107 @@ def _best_model(run_dir: Path, manifest: RunManifest) -> Path:
     if not submodels:
         raise RuntimeError(f"no sparse submodel found under {model_root}")
     return max(submodels, key=lambda p: sum(f.stat().st_size for f in p.iterdir() if f.is_file()))
+
+
+def _mask_source(run_dir: Path, manifest: RunManifest) -> Path | None:
+    """The canonical mask directory for this run, or None if it has no masks."""
+    record = manifest.stages[StageId.MASK]
+    if record.state is StageState.SKIPPED:
+        return None
+    relative = record.artifacts.get("masks")
+    if not relative:
+        return None
+    directory = run_dir / relative
+    return directory if directory.is_dir() else None
+
+
+def _build_mask_farm(masks: Path, images_dir: Path, target: Path) -> int:
+    """Stage the masks under the image names, so the undistorter will map them.
+
+    ``image_undistorter`` looks up each name from the sparse model's images.txt, so
+    every file here has to be called exactly what its photograph is called --
+    ``cam_high/000042.jpg`` -- whatever is actually inside it. PNG bytes are written
+    under that name because COLMAP sniffs the magic rather than trusting the
+    extension, and a lossless round trip keeps the edge exact; the threshold
+    afterwards is what makes it not matter if that ever stops being true.
+    """
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    staged = 0
+    for image in sorted(images_dir.rglob("*")):
+        if not image.is_file():
+            continue
+        relative = image.relative_to(images_dir)
+        mask = masks / relative.parent / f"{relative.stem}.png"
+        if not mask.is_file():
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(mask, destination)
+        except OSError:
+            shutil.copy2(mask, destination)
+        staged += 1
+    return staged
+
+
+def _threshold_masks(undistorted_masks: Path, undistorted_images: Path) -> int:
+    """Threshold at 127 and write each mask beside the image it belongs to.
+
+    Beside, rather than into one folder passed with ``-m``: that flag flattens every
+    camera group into a single directory keyed on the bare filename, and the shared
+    slot clock guarantees two cameras collide there. ``ignore_mask_label`` reads these
+    siblings per-image instead, which the v2.4.0 help describes as masks "next to each
+    image with '.mask.png'".
+
+    The threshold is HANDOVER 6.8's, and it is what makes the round trip through
+    whatever the undistorter chose to write harmless.
+    """
+    written = 0
+    for mask in sorted(undistorted_masks.rglob("*")):
+        if not mask.is_file():
+            continue
+        image = cv2.imread(str(mask), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            continue
+        binary = np.where(image >= 127, 255, 0).astype(np.uint8)
+        target = undistorted_images / mask.relative_to(undistorted_masks)
+        target = target.with_name(f"{target.stem}.mask.png")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), binary)
+        written += 1
+    return written
+
+
+def _check_mask_siblings(undistorted_images: Path) -> None:
+    """Fail loudly if the second pass produced something other than a clean mask.
+
+    A mask that came back smeared -- interpolated, half-transparent, or resampled
+    against a different geometry -- still writes without complaint and still lets the
+    densify run. It goes wrong only at the boundary, which is exactly where the ears
+    and the hair are, and nothing downstream would ever mention it. So look at the
+    pixel distribution: a real mask is almost entirely black and white.
+    """
+    masks = sorted(undistorted_images.rglob("*.mask.png"))
+    if not masks:
+        raise RuntimeError(
+            "the mask undistortion pass wrote no masks beside the images, so the "
+            "densify would silently reconstruct the background back in"
+        )
+    sample = masks[: min(12, len(masks))]
+    for mask in sample:
+        image = cv2.imread(str(mask), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise RuntimeError(f"could not read back the undistorted mask {mask}")
+        middling = float(((image > 32) & (image < 223)).mean())
+        if middling > 0.02:
+            raise RuntimeError(
+                f"{mask.name} is {middling:.1%} mid-grey after thresholding, which "
+                f"means the mask was smeared rather than rectified. The two "
+                f"image_undistorter passes have to share one UndistortGeometry "
+                f"(HANDOVER 6.8); if they have drifted apart, the mask is wrong "
+                f"precisely at the boundary and nothing downstream will say so."
+            )
 
 
 def _check_undistorted(undistorted: Path) -> None:
@@ -335,6 +495,8 @@ def _summarise(
     depth_maps: int,
     freed: int,
     peak_gb: float,
+    *,
+    masked: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     registered = manifest.stages[StageId.SPARSE].metrics.get("images_registered") or 0
     per_view = total_points / registered if registered else 0.0
@@ -342,6 +504,10 @@ def _summarise(
     metrics: dict[str, Any] = {
         "num_points": total_points,
         "preview_points": preview_points,
+        # Whether the background was excluded, and the label that made OpenMVS read
+        # the masks at all -- -1, its default, means "estimate one" and ignores them.
+        "masked": masked,
+        "ignore_mask_label": 0 if masked else None,
         "points_per_view": round(per_view),
         "resolution_level": params.resolution_level,
         "depth_maps": depth_maps,

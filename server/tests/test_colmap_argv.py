@@ -215,13 +215,93 @@ def test_masks_are_only_passed_when_the_build_reads_them() -> None:
     assert not any("mask_path" in f for f in flags(legacy))
 
 
-def test_undistorter_carries_the_flags_masks_would_have_to_match() -> None:
-    """HANDOVER 6.8: a mask pass must reuse these verbatim or the masks drift."""
-    argv = colmap.image_undistorter(
+# -- HANDOVER 6.8: the two undistort passes must agree exactly ---------------
+#
+# Masks are undistorted in a second pass, and if its geometry differs at all the
+# mask lands a pixel or two from the image it belongs to. That is invisible except
+# at the boundary, and the boundary is where ears and hair are.
+
+GEOMETRY_FLAGS = (
+    "--max_image_size",
+    "--blank_pixels",
+    "--min_scale",
+    "--max_scale",
+    "--roi_min_x",
+    "--roi_min_y",
+    "--roi_max_x",
+    "--roi_max_y",
+)
+
+
+def _geometry_flags(argv: list) -> dict[str, str]:
+    return {name: flag_value(argv, name) for name in GEOMETRY_FLAGS}
+
+
+def test_two_passes_from_one_geometry_are_identical_where_it_matters() -> None:
+    """The image pass and the mask pass, built from the same object."""
+    geometry = colmap.UndistortGeometry(max_image_size=2000, roi_max_x=0.9)
+
+    images = colmap.image_undistorter(
         image_path=Path("img"),
         input_path=Path("model"),
         output_path=Path("dense"),
-        max_image_size=2000,
+        geometry=geometry,
+    )
+    masks = colmap.image_undistorter(
+        image_path=Path("mask_farm"),
+        input_path=Path("model"),
+        output_path=Path("dense_masks"),
+        geometry=geometry,
+        jpeg_quality=100,
+    )
+
+    assert _geometry_flags(images) == _geometry_flags(masks)
+
+
+def test_every_geometry_flag_is_emitted_even_at_its_default() -> None:
+    """Identical-by-omission stays identical only until someone passes one of them.
+
+    The builder used to emit max_image_size alone and rely on the binary's defaults
+    for the rest, so two call sites agreed by accident rather than by construction.
+    """
+    argv = colmap.image_undistorter(
+        image_path=Path("img"), input_path=Path("model"), output_path=Path("dense")
+    )
+
+    for name in GEOMETRY_FLAGS:
+        assert flag_value(argv, name) is not None, f"{name} is left to the binary"
+
+
+def test_the_geometry_cannot_be_edited_after_it_is_shared() -> None:
+    """Both passes hold the same object, so it must not be mutable."""
+    import dataclasses
+
+    geometry = colmap.UndistortGeometry()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        geometry.max_image_size = 1000  # type: ignore[misc]
+
+
+def test_jpeg_quality_is_not_part_of_the_geometry() -> None:
+    """It changes the encoding, not where a pixel lands, so it may safely differ."""
+    geometry = colmap.UndistortGeometry()
+    plain = colmap.image_undistorter(
+        image_path=Path("img"), input_path=Path("m"), output_path=Path("o"),
+        geometry=geometry,
+    )
+    crisp = colmap.image_undistorter(
+        image_path=Path("img"), input_path=Path("m"), output_path=Path("o"),
+        geometry=geometry, jpeg_quality=100,
+    )
+
+    assert _geometry_flags(plain) == _geometry_flags(crisp)
+    assert flag_value(crisp, "--jpeg_quality") == "100"
+    assert flag_value(plain, "--jpeg_quality") is None
+
+
+def test_undistorter_still_names_its_output_type() -> None:
+    argv = colmap.image_undistorter(
+        image_path=Path("img"), input_path=Path("model"), output_path=Path("dense"),
+        geometry=colmap.UndistortGeometry(max_image_size=2000),
     )
     assert flag_value(argv, "--max_image_size") == "2000"
     assert flag_value(argv, "--output_type") == "COLMAP"

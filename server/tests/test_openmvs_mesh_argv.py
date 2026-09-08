@@ -208,3 +208,45 @@ def test_verbosity_is_never_emitted() -> None:
     """-v changes what the tools write to disk, not just what they say about it."""
     for argv in all_builders():
         assert "-v" not in argv and "--verbosity" not in argv
+
+
+# -- masks (HANDOVER 6.7, and the collision -m would cause) -------------------
+
+
+def test_densify_reads_masks_only_when_given_a_label() -> None:
+    """--ignore-mask-label defaults to -1, which means "estimate one" and ignores
+    the files on disk entirely. Passing -m without this reads no mask at all."""
+    argv = openmvs.densify_point_cloud(
+        input_file=Path("scene.mvs"), output_file=Path("dense.ply"),
+        ignore_mask_label=0,
+    )
+
+    assert "--ignore-mask-label" in argv
+    assert argv[argv.index("--ignore-mask-label") + 1] == "0"
+
+
+def test_densify_says_nothing_about_masks_on_an_unmasked_run() -> None:
+    argv = openmvs.densify_point_cloud(
+        input_file=Path("scene.mvs"), output_file=Path("dense.ply")
+    )
+
+    assert "--ignore-mask-label" not in argv
+
+
+def test_densify_refuses_the_mask_path_flag() -> None:
+    """-m flattens every camera group into one directory keyed on the bare filename.
+
+    The shared slot clock then guarantees cam_high/000042.jpg and cam_eye/000042.jpg
+    both resolve to 000042.mask.png, so one camera's masks are applied to the other.
+    It looks perfect on a single-camera run and is wrong on every rig, which is
+    exactly the kind of omission somebody would helpfully "fix" later.
+    """
+    with pytest.raises(ValueError) as caught:
+        openmvs.densify_point_cloud(
+            input_file=Path("scene.mvs"), output_file=Path("dense.ply"),
+            mask_path=Path("masks"),
+        )
+
+    message = str(caught.value)
+    assert "one flat folder" in message
+    assert "ignore_mask_label" in message, "the error must name the alternative"

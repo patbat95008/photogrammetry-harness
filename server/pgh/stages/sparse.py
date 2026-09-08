@@ -196,6 +196,10 @@ class SparseStage(Stage):
         dialect = colmap_dialect()
         matcher = _choose_matcher(params, ctx)
 
+        mask_dir = _mask_dir(run_dir, ctx.manifest)
+        if mask_dir is not None:
+            _check_mask_coverage(mask_dir, submitted)
+
         ctx.progress("detecting features", fraction=0.02)
         run_tool(
             ctx,
@@ -208,6 +212,7 @@ class SparseStage(Stage):
                 max_image_size=params.max_image_size,
                 max_num_features=params.max_num_features,
                 use_gpu=params.use_gpu,
+                mask_path=mask_dir,
             ),
             cwd=scratch,
             label="colmap feature_extractor",
@@ -276,7 +281,8 @@ class SparseStage(Stage):
         _commit(run_dir / "sparse", scratch)
 
         metrics, warnings = _summarise(
-            ctx.manifest, model, analyzer, submitted, sizes, matcher, cloud_points
+            ctx.manifest, model, analyzer, submitted, sizes, matcher, cloud_points,
+            masked=mask_dir is not None,
         )
         return StageResult(
             artifacts={
@@ -335,6 +341,42 @@ def _choose_matcher(params: SparseParams, ctx: StageContext) -> str:
     )
     ctx.logger.info("matching exhaustively: %s", reason)
     return "exhaustive"
+
+
+def _mask_dir(run_dir: Path, manifest: RunManifest) -> Path | None:
+    """The COLMAP-named mask view for this run, or None if it has no masks."""
+    record = manifest.stages[StageId.MASK]
+    if record.state is StageState.SKIPPED:
+        return None
+    relative = record.artifacts.get("masks_colmap")
+    if not relative:
+        return None
+    directory = run_dir / relative
+    return directory if directory.is_dir() else None
+
+
+def _check_mask_coverage(mask_dir: Path, submitted: list[str]) -> None:
+    """Refuse to start when a selected frame has no mask.
+
+    COLMAP does not complain about a missing mask file -- it extracts that image
+    unmasked and says nothing. On a run where selection kept a frame the mask stage
+    never covered, that leaves a handful of fully-backgrounded images in an otherwise
+    clean solve, which is the shape of failure that survives all the way to a model
+    that looks almost right.
+    """
+    missing = [
+        name
+        for name in submitted
+        if not (mask_dir / f"{name}.png").is_file()
+    ]
+    if not missing:
+        return
+    raise RuntimeError(
+        f"{len(missing)} of {len(submitted)} selected frames have no mask (first: "
+        f"{missing[0]}). COLMAP does not report a missing mask, it just extracts that "
+        f"image unmasked -- so those frames would put the background back into a solve "
+        f"the rest of which excludes it. Re-run the mask stage."
+    )
 
 
 def _build_image_farm(
@@ -508,6 +550,8 @@ def _summarise(
     sizes: list[int],
     matcher: str,
     cloud_points: int,
+    *,
+    masked: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     registered = len(model.images)
     rate = registered / len(submitted) if submitted else 0.0
@@ -517,6 +561,9 @@ def _summarise(
 
     metrics: dict[str, Any] = {
         "matcher": matcher,
+        # Whether the background was excluded is the single biggest thing about how
+        # this model was solved, and it is not otherwise visible from the numbers.
+        "masked": masked,
         "images_submitted": len(submitted),
         "images_registered": registered,
         "registration_rate": round(rate, 4),
