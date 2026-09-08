@@ -1,9 +1,9 @@
 # Photogrammetry Harness — Handover
 
-**Status:** Ingest → select → align → dense → mesh is **built and verified end to end on
-real footage**. Mask and export are designed and stubbed.
+**Status:** The whole chain, ingest → export, is **built and verified end to end on
+real footage**. Only masking (M9) remains.
 **Last verified:** 2026-09-07 on the `cup-1` orbit, plus synthetic ground-truth footage.
-**Tests:** 236 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
+**Tests:** 277 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
 
 ---
 
@@ -21,7 +21,7 @@ reconstruction.
 ```
 FFmpeg / stills → OpenCV/SAM 2 → COLMAP → OpenMVS → Blender
 ingest            select/mask     align    dense/mesh  cleanup
-  ✅                ✅ ⬜          ✅       ✅   ✅       ⬜
+  ✅                ✅ ⬜          ✅       ✅   ✅       ✅
 ```
 
 **The whole tower has now been proven.** A 60-second handheld orbit of a coffee cup
@@ -81,10 +81,14 @@ server/pgh/
   files.py        source identity, ingest-root guard
   photos.py       reading a folder of stills: natural order, EXIF  ← §10
   ply.py          point clouds in, browser-sized previews out; face counts  ← §6.13
+  orient.py       up axis from the camera plane, scale from the rig baseline
   vendor/
     ffmpeg.py     argv builders and probing
     colmap.py     dialect-aware argv builders (§6.6) + sparse model parsing
     openmvs.py    argv builders, flags read off the v2.4.0 binaries  ← §6.4
+    blender.py    headless invocation and the PGH_RESULT protocol
+  blender/
+    export_mesh.py  runs INSIDE Blender: no pgh, no numpy  ← §6.25
   api/            runs clips stages sync fs artifacts events doctor deps
   stages/
     base.py       Stage contract: params, external_inputs, preflight, run
@@ -95,12 +99,14 @@ server/pgh/
     sparse.py     Stage 4 ✅ — COLMAP align
     dense.py      Stage 5 ✅ — undistort, InterfaceCOLMAP, DensifyPointCloud
     mesh.py       Stage 6 ✅ — ReconstructMesh, RefineMesh, TextureMesh  ← §6.19-6.24
-    planned.py    copy for the three unbuilt stages, varies by capture mode
+    export.py     Stage 7 ✅ — orient, scale, clean and write, via headless Blender
+    planned.py    copy for the mask stage, which is the only one left
 web/src/          Vite + React + TS. StageShell auto-builds param forms from the
                   pydantic JSON schema — a new stage gets a working UI for free.
   components/viewer3d.tsx           framing, sizing and the flip, shared by both viewers
   components/PointCloudViewer.tsx   points, frusta and trajectory: sparse and dense
   components/MeshViewer.tsx         surfaces: textured, matte and wireframe
+  components/ExportPage.tsx         turntable, dimensions and downloads
 ```
 
 ### Run directory (`D:\pgh-runs\<run_id>\`)
@@ -124,6 +130,10 @@ dense/scene_dense.ply   the full dense cloud
 dense/preview.ply       decimated to a cap, so the browser can hold it
 mesh/mesh.ply           the raw surface, untextured — count components on THIS (§6.23)
 mesh/mesh_textured.glb  the painted mesh, plus mesh_textured_0.png beside it (§6.24)
+export/model.glb        the finished object: cleaned, stood up, scaled
+export/model.stl        the same, for a slicer -- carries no units, so see §8 on scale
+export/turntable/       36 PNGs orbiting what was actually exported
+export/report.json      metrics and warnings, as written
 logs/                 per-stage run logs
 .partial/             stage scratch; committed by atomic rename, wiped on failure
 ```
@@ -244,6 +254,7 @@ confidence 363.
 | Align | **183 of 183 registered**, one model, 50,189 points | 11m 52s |
 | Dense | **738,015 points**, 4,033 per view, 2.6 GB of depth maps reclaimed | 3m 47s |
 | Mesh | **497,926 triangles** over 249,022 vertices, textured to one 4096² atlas | 4m 52s |
+| Export | cleaned to **495,490** in one shell, stood up, GLB + STL + 36 turntable frames | 16.3 s |
 
 Align in detail: mean reprojection error **1.162 px**, mean track length **6.04**, a
 single submodel — the 1.5-revolution orbit closed, and the camera trajectory is a smooth
@@ -257,6 +268,15 @@ Dense peaked at 19.1 GB of system RAM at `resolution_level 1`. Matching was exha
 Everything §7 predicted about this capture showed up: the glass table produced a haze of
 phantom points beneath the mug, and the brushes came out as streaks rather than
 cylinders. Neither is a bug.
+
+Export in detail: the up axis came out of a plane fitted to 183 camera centres at
+planarity **0.043** — convincingly planar — and cross-checks against two independent
+estimators. It sits **9.3°** from the mean of the cameras' own up vectors, and **7°** from
+the normal of a plane fitted to the tabletop geometry, neither of which the fit uses. The
+cleanup healed 88,778 seam-split vertices, found 7 connected shells, and dropped 2,436
+faces of floating debris to keep 495,490 in one piece. `cup-1` is a single camera, so
+there is no rig baseline and the export is in model units — which the stage says in a
+warning rather than implying a size it never established.
 
 Mesh in detail: reconstruction took 27.8 s and texturing 264.1 s, of which **4m 2s was
 the single "assigning the best view to each face" phase** — which is why the progress
@@ -464,6 +484,24 @@ recorded as artifacts and both must be served — which works because they land 
 directory, so `GLTFLoader` resolves the sidecar against the mesh's own URL. Confirmed in
 the browser: loading the mesh fetches the `.png` too.
 
+**6.25 Blender's glTF importer converts axes into the vertex data, not the transform.**
+glTF is Y-up and Blender is Z-up, so the importer rewrites every vertex as `(x, -z, y)`
+on the way in — and leaves `matrix_world` as the identity, so there is nothing at runtime
+to read the conversion back off. An up axis computed from the camera poses and applied to
+that mesh is therefore 90° out. This cost two wrong fixes before the right one: carrying
+the axis through `matrix_world` does nothing (it is identity), and carrying it through
+after correcting the object transform double-applies the conversion, because
+`matrix_world` maps the mesh's *data* coordinates into the world and the axis was never in
+data coordinates. What works is `export_mesh.py:GLTF_TO_RECONSTRUCTION`: undo the
+conversion at import so world coordinates *are* reconstruction coordinates, then use the
+axis untouched. OBJ and PLY are told `forward_axis="Y", up_axis="Z"` so they convert
+nothing in the first place.
+
+**The reason this was worth chasing:** the model exported standing on its edge while
+every number in the report — 7 components, 2,436 faces dropped, planarity 0.043 — looked
+entirely reasonable. Nothing but looking at it would have caught it, which is what the
+orthographic top/front/side check in §5 is for.
+
 ## 7. The smoke test: `cup-1`
 
 **Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:**
@@ -500,9 +538,9 @@ pair from §5. Keep them; they are the regression test for slot alignment.
 
 ## 8. Next steps
 
-Two milestones remain — M11 is built. **Take M12 next**: it continues the chain that is
-now proven all the way to a textured surface, and gets a printable object out the far
-end. M9 is the hardest and the only one the face scan strictly requires.
+**One milestone remains.** M11 and M12 are built, so the chain runs from footage to a
+printable file. M9 (mask) is the hardest, the only one the face scan strictly requires,
+and the one that wants footage that has not been shot yet.
 
 ### M11 — Mesh ✅ built
 
@@ -532,7 +570,7 @@ Watch: `RefineMesh` is the slow step and the one most likely to exhaust memory. 
 resolution/scale knob as prominently as `resolution_level` is exposed on dense, and
 consider defaulting refinement **off** until it has been run once successfully.
 
-### M12 — Export
+### M12 — Export ✅ built
 
 Headless Blender: `blender -b -P <script>` (5.2 LTS is installed; note it is
 `required=False` in `config.py`, so the export stage must check for it in `preflight`).

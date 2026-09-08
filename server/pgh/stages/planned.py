@@ -52,21 +52,6 @@ PLANNED: dict[StageId, PlannedStage] = {
             ),
         },
     ),
-    StageId.EXPORT: PlannedStage(
-        label="Export",
-        summary="Clean up, set real-world scale, and write files you can use.",
-        plan=[
-            "Isolate the largest connected component and drop floating fragments.",
-            "Set absolute scale from the measured camera baseline -- photogrammetry "
-            "recovers shape but never size.",
-            "Orient and centre the bust -- the up axis from the plane the cameras lie "
-            "in, its sign from the flip recorded in the cloud viewer, so the model "
-            "exports the way up it was reviewed.",
-            "Decimate to a sane polygon count and export GLB/OBJ/STL via headless "
-            "Blender.",
-            "Render a turntable for the record.",
-        ],
-    ),
 }
 
 

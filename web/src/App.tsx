@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes, useParams } from "react-router-dom";
 import ClipsPage from "./components/ClipsPage";
 import DensePage from "./components/DensePage";
 import DoctorPage from "./components/DoctorPage";
+import ExportPage from "./components/ExportPage";
 import ExtractPage from "./components/ExtractPage";
 import MeshPage from "./components/MeshPage";
 import RunsPage from "./components/RunsPage";
@@ -20,6 +21,7 @@ const BUILT_STAGES: Record<string, () => JSX.Element | null> = {
   sparse: SparsePage,
   dense: DensePage,
   mesh: MeshPage,
+  export: ExportPage,
 };
 
 const STAGES = [

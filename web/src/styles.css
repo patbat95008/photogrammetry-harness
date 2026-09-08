@@ -1054,3 +1054,54 @@ button.primary:disabled {
   color: var(--text-faint);
   line-height: 1.4;
 }
+
+/* -- export stage ---------------------------------------------------------- */
+
+.turntable {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel-2);
+  padding: 10px;
+}
+
+.turntable img {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  /* The frames are rendered square; reserving the box stops the panel jumping as
+     each one loads. */
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  background: var(--bg);
+}
+
+.turntable .cloud-control {
+  justify-content: center;
+}
+
+.export-downloads {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.export-downloads a {
+  padding: 7px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.export-downloads a:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

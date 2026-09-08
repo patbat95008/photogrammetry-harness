@@ -24,6 +24,7 @@ ARTIFACT_MEDIA_TYPES: dict[str, str] = {
     # directory. .gltf is deliberately absent -- it also needs a sidecar .bin, and
     # allowing that extension here would expose the dense stage's depth maps.
     ".glb": "model/gltf-binary",
+    ".stl": "model/stl",
     ".json": "application/json",
     ".jsonl": "application/x-ndjson",
     ".txt": "text/plain; charset=utf-8",
