@@ -52,17 +52,6 @@ PLANNED: dict[StageId, PlannedStage] = {
             ),
         },
     ),
-    StageId.MESH: PlannedStage(
-        label="Mesh",
-        summary="Build a surface from the dense cloud and paint it with the photographs.",
-        plan=[
-            "Reconstruct a mesh, refine it against the images, then texture it.",
-            "Expect the crown of the head to be invented rather than measured unless a "
-            "pass covering it was captured.",
-            "Show the result texture-shaded, matte-shaded and as wireframe: a surface "
-            "problem hidden by a convincing texture is the usual failure.",
-        ],
-    ),
     StageId.EXPORT: PlannedStage(
         label="Export",
         summary="Clean up, set real-world scale, and write files you can use.",

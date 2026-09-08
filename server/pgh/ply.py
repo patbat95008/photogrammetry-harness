@@ -73,6 +73,9 @@ class Header:
     fmt: str
     data_offset: int
     text: str
+    #: Faces, when the file has any. A point cloud has no face element, so this is 0.
+    #: Defaulted so the readers, which only ever care about vertices, are unaffected.
+    face_count: int = 0
 
     @property
     def has_lists(self) -> bool:
@@ -86,8 +89,15 @@ class Header:
 def _parse_header(fh) -> Header:
     """Read the header, describing the vertex element.
 
-    Later elements (faces, edges) are ignored: a point cloud has none, and a mesh's
-    vertices are still the first block.
+    Later elements are *counted* but not described: a mesh is measured in faces, so
+    the face count is worth carrying, while its properties are not -- a point cloud
+    has none, and a mesh's vertices are still the first block either way.
+
+    That the face element's properties are skipped is load-bearing rather than lazy.
+    A mesh's variable-length list lives on the *face* element, so leaving it out of
+    ``properties`` keeps ``has_lists`` false, which sends a mesh down the fixed-stride
+    reader -- which memory-maps exactly ``vertex_count`` records and stops before the
+    face block instead of reading it as coordinates.
 
     List properties are described rather than rejected. OpenMVS attaches a per-point
     list of the views that saw it, which makes the record length vary from point to
@@ -134,12 +144,14 @@ def _parse_header(fh) -> Header:
             break
 
     vertex_count = next((n for name, n in counts if name == "vertex"), 0)
+    face_count = next((n for name, n in counts if name == "face"), 0)
     return Header(
         vertex_count=vertex_count,
         properties=properties,
         fmt=fmt,
         data_offset=fh.tell(),
         text="\n".join(lines),
+        face_count=face_count,
     )
 
 
@@ -343,3 +355,15 @@ def count_vertices(path: Path) -> int:
     """Read just the vertex count out of a PLY header."""
     with path.open("rb") as fh:
         return _parse_header(fh).vertex_count
+
+
+def count_elements(path: Path) -> tuple[int, int]:
+    """Vertices and faces from a PLY header. Faces are 0 for a point cloud.
+
+    A mesh is measured in faces rather than points: two meshes with the same vertex
+    count can describe twice as much surface as each other, and it is the face count
+    that decides whether a viewer can hold it and whether an export needs decimating.
+    """
+    with path.open("rb") as fh:
+        header = _parse_header(fh)
+    return header.vertex_count, header.face_count

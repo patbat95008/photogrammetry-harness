@@ -10,12 +10,25 @@
  * solve, an orbit that broke in half, a handful of views flung across the scene all
  * produce plausible numbers and unmistakable shapes. Drawing where the camera
  * thought it was, in the scene it reconstructed, is the cheapest way to see it.
+ *
+ * Framing, canvas sizing, the flip and the rotation about the model's centre are
+ * shared with the mesh viewer and live in viewer3d.tsx.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useState } from "react";
+import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
+
+import {
+  CAMERA,
+  FitToExtent,
+  FlippedGroup,
+  GL,
+  robustExtent,
+  useFlip,
+  useSizedRef,
+} from "./viewer3d";
 
 export interface PoseImage {
   name: string;
@@ -27,78 +40,6 @@ export interface PoseImage {
 export interface PosesFile {
   images: PoseImage[];
   cameras: { camera_id: number; width: number; height: number; params: number[] }[];
-}
-
-export interface Extent {
-  centre: [number, number, number];
-  radius: number;
-}
-
-// Hoisted rather than written inline in the JSX. A fresh object literal on every
-// render makes r3f tear down and rebuild the renderer, and the rebuilt canvas comes
-// back at the HTML default of 300x150 and never resizes -- a viewer stuck in the
-// corner of its own panel.
-const CAMERA = { fov: 55, position: [2, 2, 2] as [number, number, number] };
-//: preserveDrawingBuffer keeps the composited frame readable, so the canvas can be
-//: captured or saved. Without it a screenshot of the viewer comes out black.
-const GL = { preserveDrawingBuffer: true };
-
-/**
- * Where the cloud actually is, ignoring the outliers every reconstruction produces.
- *
- * Fitting to the raw bounding box does not work here. A COLMAP sparse cloud always
- * carries a handful of badly-triangulated points flung far from the scene -- the cup
- * orbit spans 11 units of real content inside a 54-unit bounding box -- so a camera
- * framed on min/max leaves the subject a few percent of the view and looks, wrongly,
- * like an empty reconstruction.
- *
- * Percentiles rather than a mean and standard deviation, because the outliers are
- * distant enough to drag both.
- */
-function robustExtent(positions: Float32Array): Extent {
-  const count = Math.floor(positions.length / 3);
-  if (count === 0) return { centre: [0, 0, 0], radius: 1 };
-
-  // Sampling keeps this cheap on a million-point cloud; percentiles are stable.
-  const stride = Math.max(1, Math.floor(count / 40000));
-  const axes: number[][] = [[], [], []];
-  for (let i = 0; i < count; i += stride) {
-    axes[0].push(positions[i * 3]);
-    axes[1].push(positions[i * 3 + 1]);
-    axes[2].push(positions[i * 3 + 2]);
-  }
-
-  const centre: number[] = [];
-  let span = 0;
-  for (const values of axes) {
-    values.sort((a, b) => a - b);
-    const low = values[Math.floor(values.length * 0.02)];
-    const high = values[Math.floor(values.length * 0.98)];
-    centre.push((low + high) / 2);
-    span = Math.max(span, high - low);
-  }
-
-  return { centre: centre as [number, number, number], radius: span / 2 || 1 };
-}
-
-/** Frame the camera on the cloud once, at a distance that fits its real extent. */
-function FitToCloud({ extent }: { extent: Extent | null }) {
-  const { camera } = useThree();
-  const fitted = useRef(false);
-
-  useEffect(() => {
-    if (!extent || fitted.current) return;
-    const [cx, cy, cz] = extent.centre;
-    const r = extent.radius;
-    camera.position.set(cx + r * 2.0, cy + r * 1.3, cz + r * 2.0);
-    camera.lookAt(cx, cy, cz);
-    camera.near = r / 100;
-    camera.far = r * 200;
-    camera.updateProjectionMatrix();
-    fitted.current = true;
-  }, [extent, camera]);
-
-  return null;
 }
 
 function Cloud({
@@ -245,44 +186,8 @@ export default function PointCloudViewer({
   const [pointSize, setPointSize] = useState(1.6);
   const [showFrusta, setShowFrusta] = useState(true);
   const [dark, setDark] = useState(true);
-  /**
-   * Whether to stand the model up.
-   *
-   * COLMAP's world frame is arbitrary and every capture so far has come out inverted,
-   * so this starts on -- and starts on before the run has answered, so the first paint
-   * is already the right way up rather than flipping under the viewer a moment later.
-   * The toggle exists because the sign is genuinely ambiguous: the axis is recoverable
-   * from the plane the cameras lie in, its direction is not.
-   */
-  const [flipped, setFlipped] = useState(true);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  /**
-   * Hold the canvas back until its container has a real size.
-   *
-   * The renderer measures its container on mount and starts its render loop from
-   * that, so mounting into a container measured as zero leaves the canvas at the
-   * HTML default of 300x150 with the loop never started. Measuring first and
-   * mounting second costs one render and removes that possibility.
-   *
-   * Confirmed rendering in Firefox. It does not render in the embedded browser used
-   * by some tooling, where ResizeObserver never fires at all and only a window
-   * resize event ever produces a measurement -- so if this ever looks blank, check
-   * it in a real browser before assuming the reconstruction is empty.
-   */
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const wrap = wrapRef.current;
-    if (!wrap) return;
-    const check = () => {
-      const { width, height } = wrap.getBoundingClientRect();
-      if (width > 0 && height > 0) setReady(true);
-    };
-    check();
-    const observer = new ResizeObserver(check);
-    observer.observe(wrap);
-    return () => observer.disconnect();
-  }, []);
+  const [flipped, toggleFlip] = useFlip(runId);
+  const [wrapRef, ready] = useSizedRef();
 
   useEffect(() => {
     let cancelled = false;
@@ -326,43 +231,6 @@ export default function PointCloudViewer({
     };
   }, [posesUrl]);
 
-  useEffect(() => {
-    if (!runId) return;
-    let cancelled = false;
-    fetch(`/api/runs/${runId}/orientation`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((data: { flip_x: boolean }) => {
-        if (!cancelled) setFlipped(data.flip_x);
-      })
-      .catch(() => {
-        /* the default is the answer for every run so far; show it and carry on */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId]);
-
-  /**
-   * Apply the flip at once, then record it.
-   *
-   * Optimistic because the toggle has to feel immediate, but reverted if the write
-   * fails: this setting is read back on the next visit and by the export stage, so a
-   * checkbox that quietly did not persist would be a lie about the exported model.
-   */
-  function toggleFlip(next: boolean) {
-    setFlipped(next);
-    if (!runId) return;
-    fetch(`/api/runs/${runId}/orientation`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ flip_x: next }),
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(String(r.status));
-      })
-      .catch(() => setFlipped(!next));
-  }
-
   useEffect(() => () => geometry?.dispose(), [geometry]);
 
   const extent = useMemo(() => {
@@ -376,24 +244,6 @@ export default function PointCloudViewer({
   const target = useMemo(
     () => extent?.centre ?? ([0, 0, 0] as [number, number, number]),
     [extent],
-  );
-
-  /**
-   * The flip, as a rotation about the cloud's centre rather than the world origin.
-   *
-   * Turning the model about its own centre leaves that centre a fixed point, so the
-   * framing above and the OrbitControls target below stay correct and toggling turns
-   * the model in place instead of swinging it out of frame. Memoised for the same
-   * reason as everything else here: a fresh array per render restarts the scene graph
-   * node it is applied to.
-   */
-  const flipRotation = useMemo<[number, number, number]>(
-    () => (flipped ? [Math.PI, 0, 0] : [0, 0, 0]),
-    [flipped],
-  );
-  const negTarget = useMemo<[number, number, number]>(
-    () => [-target[0], -target[1], -target[2]],
-    [target],
   );
 
   const pointCount = geometry?.getAttribute("position")?.count ?? 0;
@@ -451,24 +301,20 @@ export default function PointCloudViewer({
         {geometry && ready && (
           <Canvas camera={CAMERA} gl={GL}>
             <color attach="background" args={[dark ? "#12161c" : "#eef1f5"]} />
-            <FitToCloud extent={extent} />
+            <FitToExtent extent={extent} />
             {/*
               Cameras turn with the cloud: they are a claim about where each shot was
               taken from in this model, and are only true of it in the same frame.
-              The group stays mounted in both states, so toggling costs a matrix
-              update rather than a remount of a million-point geometry.
             */}
-            <group position={target} rotation={flipRotation}>
-              <group position={negTarget}>
-                <Cloud geometry={geometry} pointSize={pointSize} />
-                {showFrusta && poses.length > 0 && (
-                  <>
-                    <Frusta poses={poses} scale={sceneRadius * 0.08} highlightWeak />
-                    <Trajectory poses={poses} />
-                  </>
-                )}
-              </group>
-            </group>
+            <FlippedGroup target={target} flipped={flipped}>
+              <Cloud geometry={geometry} pointSize={pointSize} />
+              {showFrusta && poses.length > 0 && (
+                <>
+                  <Frusta poses={poses} scale={sceneRadius * 0.08} highlightWeak />
+                  <Trajectory poses={poses} />
+                </>
+              )}
+            </FlippedGroup>
             {/*
               The target must be the cloud's centre. OrbitControls drives the camera
               every frame from its own target, which defaults to the origin -- so

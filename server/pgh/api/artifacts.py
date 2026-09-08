@@ -19,6 +19,11 @@ router = APIRouter(prefix="/api/runs/{run_id}", tags=["artifacts"])
 #: depth maps, none of which any client has a reason to ask for.
 ARTIFACT_MEDIA_TYPES: dict[str, str] = {
     ".ply": "application/octet-stream",
+    # A .glb is not self-contained: TextureMesh writes the atlas beside it as a .png and
+    # references it by relative URI, which resolves because both land in the same
+    # directory. .gltf is deliberately absent -- it also needs a sidecar .bin, and
+    # allowing that extension here would expose the dense stage's depth maps.
+    ".glb": "model/gltf-binary",
     ".json": "application/json",
     ".jsonl": "application/x-ndjson",
     ".txt": "text/plain; charset=utf-8",

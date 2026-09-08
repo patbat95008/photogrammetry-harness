@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import re
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,9 @@ def colmap_path() -> Path:
     return _tool("colmap")
 
 
+@lru_cache(maxsize=1)
 def version() -> str:
+    """Cached for the reason given on ``openmvs.version``: fingerprints call it often."""
     result = capture([colmap_path(), "-h"], cwd=Path.cwd(), timeout=30)
     match = re.search(r"COLMAP\s+([0-9]+\.[0-9]+\.[0-9]+[^\n)]*)", result.combined)
     return match.group(1).strip() if match else "unknown"

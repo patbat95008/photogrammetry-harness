@@ -11,6 +11,12 @@ export interface StageDetail {
     state: string;
     params: Record<string, unknown>;
     metrics: Record<string, unknown>;
+    /**
+     * Run-relative paths to what the stage wrote. The server has always sent these;
+     * a page that hardcodes a filename only gets away with it while the filename is
+     * fixed, which stops being true as soon as a stage can choose its export format.
+     */
+    artifacts: Record<string, string>;
     warnings: string[];
     error: string | null;
     duration_s: number | null;

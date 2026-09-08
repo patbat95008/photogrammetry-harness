@@ -72,6 +72,39 @@ def test_impossible_percentages_are_rejected() -> None:
     assert openmvs.percent_progress("999%") is None
 
 
+def test_a_decimal_percentage_is_read_as_the_number_it_belongs_to() -> None:
+    r"""The regression that made every dense run's progress bar a lie.
+
+    ``(\d{1,3})%`` matches the two digits immediately before the sign, so the real line
+    "35867 points inside ROI (71.46%)" was read as 46%. The bar jumped there in the
+    first second of a densify and sat still for the remaining three and a half minutes.
+    """
+    assert openmvs.percent_progress("35867 points inside ROI (71.46%)") == 0.71
+
+
+def test_mesh_counts_are_read_from_a_completion_line() -> None:
+    line = "Mesh reconstruction completed: 249632 vertices, 498780 faces (21s6ms)"
+    assert openmvs.mesh_counts(line) == (249632, 498780)
+
+
+def test_the_scene_load_line_also_reports_counts() -> None:
+    """Which is why a caller keeps the last match in a tool's output, not the first.
+
+    The scene loads before any mesh exists and reports zeroes; taking the first match
+    would record an empty mesh for a run that produced half a million faces.
+    """
+    assert openmvs.mesh_counts("\t50189 points, 0 vertices, 0 faces") == (0, 0)
+
+
+def test_the_tetrahedralization_line_is_not_a_mesh_count() -> None:
+    """It carries both words but not adjacently, and its numbers are cells, not faces."""
+    line = (
+        "Delaunay tetrahedralization completed: 738015 points -> 577954 vertices, "
+        "3756422 (+136) cells, 7512912 (+204) faces (4s109ms)"
+    )
+    assert openmvs.mesh_counts(line) is None
+
+
 def test_colmap_counters_are_recognised() -> None:
     """COLMAP reports [42/412] counters rather than percentages."""
     match = COUNTER_RE.search("Processed file [42/412]")

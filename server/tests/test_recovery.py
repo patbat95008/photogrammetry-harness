@@ -115,6 +115,22 @@ def test_only_fixed_mounts_support_a_rig():
     assert not SegmentKind.SINGLE.supports_rig
 
 
+def test_planned_copy_is_removed_once_a_stage_is_built() -> None:
+    """The other half of the pairing, which was not previously enforced.
+
+    Leaving an entry behind after building a stage is invisible: api/stages.py only
+    reads PLANNED when the registry has no Stage object, so the stale copy sits there
+    describing work that is finished and nothing ever renders it.
+    """
+    from pgh.stages import registry as stage_registry
+    from pgh.stages.planned import PLANNED
+
+    for stage_id in list(PLANNED):
+        assert stage_registry.get(stage_id) is None, (
+            f"{stage_id} is implemented, so its entry in planned.py is dead copy"
+        )
+
+
 def test_planned_stages_cover_every_unimplemented_stage(run_store):
     from pgh.stages.registry import registry
 

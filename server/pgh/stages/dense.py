@@ -28,7 +28,6 @@ ears and hair -- the places you would look last and trust most. So preflight blo
 from __future__ import annotations
 
 import shutil
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +38,8 @@ from .. import ply
 from ..manifest import RunManifest, StageId, StageState
 from ..vendor import openmvs
 from ..vendor import colmap
-from .base import Progress, Stage, StageContext, StageParams, StageResult
-from .shell import OpenMVSLog, run_tool
+from .base import Stage, StageContext, StageParams, StageResult
+from .shell import PeakMemory, run_openmvs, run_tool
 
 #: Warn when fewer than this many dense points come out per registered view; it
 #: usually means the depth maps mostly failed rather than that the object is small.
@@ -156,7 +155,7 @@ class DenseStage(Stage):
         images_dir = run_dir / "sparse" / "images"
         undistorted = scratch / "undistorted"
 
-        peak = _PeakMemory()
+        peak = PeakMemory()
         peak.start()
         try:
             ctx.progress("undistorting images", fraction=0.02)
@@ -175,7 +174,7 @@ class DenseStage(Stage):
 
             scene = scratch / "scene.mvs"
             ctx.progress("converting the scene", fraction=0.15)
-            _run_openmvs(
+            run_openmvs(
                 ctx,
                 openmvs.interface_colmap(
                     input_dir=undistorted, output_file=scene, image_folder="images"
@@ -194,7 +193,7 @@ class DenseStage(Stage):
 
             dense_scene = scratch / "scene_dense.mvs"
             ctx.progress("estimating depth maps", fraction=0.2)
-            _run_openmvs(
+            run_openmvs(
                 ctx,
                 openmvs.densify_point_cloud(
                     input_file=scene,
@@ -296,38 +295,6 @@ def _check_undistorted(undistorted: Path) -> None:
         raise RuntimeError(f"image_undistorter wrote no model to {sparse}")
 
 
-def _run_openmvs(
-    ctx: StageContext,
-    argv: list,
-    *,
-    cwd: Path,
-    tool: str,
-    label: str,
-    span: tuple[float, float],
-) -> None:
-    """Run an OpenMVS tool, taking its progress from the log file it drops.
-
-    Nothing arrives on stdout or stderr, so without the log tail the UI would show a
-    stalled bar for however long the densify takes.
-    """
-    low, high = span
-
-    def on_log_line(line: str) -> None:
-        if line.strip():
-            ctx.logger.info("[%s] %s", label, line)
-        fraction = openmvs.percent_progress(line)
-        if fraction is not None:
-            # ctx.progress() checks the cancel token, which would raise on this
-            # background tailing thread where nothing can catch it. Report directly.
-            ctx.report(
-                Progress(fraction=low + (high - low) * fraction, message=label)
-            )
-
-    with OpenMVSLog(cwd, tool) as log:
-        log.start(on_log_line)
-        run_tool(ctx, argv, cwd=cwd, label=label)
-
-
 def _find_cloud(scratch: Path) -> Path | None:
     candidates = sorted(scratch.glob("*_dense.ply")) or sorted(scratch.glob("*.ply"))
     candidates = [p for p in candidates if p.name != "preview.ply"]
@@ -352,30 +319,6 @@ def _sweep_depth_maps(
             "deleted %d depth maps, freeing %.1f GB", len(dmaps), total / 1e9
         )
     return len(dmaps), total
-
-
-class _PeakMemory:
-    """Samples system memory while the stage runs, so the report can name the peak."""
-
-    def __init__(self, interval: float = 2.0) -> None:
-        self.interval = interval
-        self.peak_gb = 0.0
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        def sample() -> None:
-            while not self._stop.wait(self.interval):
-                used = psutil.virtual_memory().used / 1e9
-                self.peak_gb = max(self.peak_gb, used)
-
-        self._thread = threading.Thread(target=sample, daemon=True, name="dense-mem")
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=3)
 
 
 def _commit(target: Path, scratch: Path) -> None:

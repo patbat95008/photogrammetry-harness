@@ -1,9 +1,9 @@
 # Photogrammetry Harness — Handover
 
-**Status:** Ingest → select → align → dense is **built and verified end to end on real
-footage**. Mask, mesh and export are designed and stubbed.
+**Status:** Ingest → select → align → dense → mesh is **built and verified end to end on
+real footage**. Mask and export are designed and stubbed.
 **Last verified:** 2026-09-07 on the `cup-1` orbit, plus synthetic ground-truth footage.
-**Tests:** 182 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
+**Tests:** 236 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
 
 ---
 
@@ -21,7 +21,7 @@ reconstruction.
 ```
 FFmpeg / stills → OpenCV/SAM 2 → COLMAP → OpenMVS → Blender
 ingest            select/mask     align    dense/mesh  cleanup
-  ✅                ✅ ⬜          ✅       ✅   ⬜       ⬜
+  ✅                ✅ ⬜          ✅       ✅   ✅       ⬜
 ```
 
 **The whole tower has now been proven.** A 60-second handheld orbit of a coffee cup
@@ -80,7 +80,7 @@ server/pgh/
   sync.py         audio cross-correlation
   files.py        source identity, ingest-root guard
   photos.py       reading a folder of stills: natural order, EXIF  ← §10
-  ply.py          point clouds in, browser-sized previews out  ← §6.13
+  ply.py          point clouds in, browser-sized previews out; face counts  ← §6.13
   vendor/
     ffmpeg.py     argv builders and probing
     colmap.py     dialect-aware argv builders (§6.6) + sparse model parsing
@@ -88,16 +88,19 @@ server/pgh/
   api/            runs clips stages sync fs artifacts events doctor deps
   stages/
     base.py       Stage contract: params, external_inputs, preflight, run
-    shell.py      run_tool, COLMAP counter parsing, OpenMVS log tailing  ← §6.4
+    shell.py      run_tool, COLMAP counters, OpenMVS log tailing, PeakMemory  ← §6.4
     registry.py   StageResolver the staleness engine runs against
     extract.py    Stage 1 ✅ — video frames, and the stills branch (§10)
     select.py     Stage 2 ✅ — sharpness, duplicates, coverage, manual overrides
     sparse.py     Stage 4 ✅ — COLMAP align
     dense.py      Stage 5 ✅ — undistort, InterfaceCOLMAP, DensifyPointCloud
+    mesh.py       Stage 6 ✅ — ReconstructMesh, RefineMesh, TextureMesh  ← §6.19-6.24
     planned.py    copy for the three unbuilt stages, varies by capture mode
 web/src/          Vite + React + TS. StageShell auto-builds param forms from the
                   pydantic JSON schema — a new stage gets a working UI for free.
-  components/PointCloudViewer.tsx   one r3f viewer, shared by sparse and dense
+  components/viewer3d.tsx           framing, sizing and the flip, shared by both viewers
+  components/PointCloudViewer.tsx   points, frusta and trajectory: sparse and dense
+  components/MeshViewer.tsx         surfaces: textured, matte and wireframe
 ```
 
 ### Run directory (`D:\pgh-runs\<run_id>\`)
@@ -119,6 +122,8 @@ sparse/preview.ply      normalised cloud the viewer loads
 dense/undistorted/      rectified images plus the pinhole model OpenMVS needs
 dense/scene_dense.ply   the full dense cloud
 dense/preview.ply       decimated to a cap, so the browser can hold it
+mesh/mesh.ply           the raw surface, untextured — count components on THIS (§6.23)
+mesh/mesh_textured.glb  the painted mesh, plus mesh_textured_0.png beside it (§6.24)
 logs/                 per-stage run logs
 .partial/             stage scratch; committed by atomic rename, wiped on failure
 ```
@@ -238,6 +243,7 @@ confidence 363.
 | Select | 241 → **183** kept (43 too soft, 15 duplicates) | 3.1 s |
 | Align | **183 of 183 registered**, one model, 50,189 points | 11m 52s |
 | Dense | **738,015 points**, 4,033 per view, 2.6 GB of depth maps reclaimed | 3m 47s |
+| Mesh | **497,926 triangles** over 249,022 vertices, textured to one 4096² atlas | 4m 52s |
 
 Align in detail: mean reprojection error **1.162 px**, mean track length **6.04**, a
 single submodel — the 1.5-revolution orbit closed, and the camera trajectory is a smooth
@@ -251,6 +257,17 @@ Dense peaked at 19.1 GB of system RAM at `resolution_level 1`. Matching was exha
 Everything §7 predicted about this capture showed up: the glass table produced a haze of
 phantom points beneath the mug, and the brushes came out as streaks rather than
 cylinders. Neither is a bug.
+
+Mesh in detail: reconstruction took 27.8 s and texturing 264.1 s, of which **4m 2s was
+the single "assigning the best view to each face" phase** — which is why the progress
+spans weight texturing at roughly ten times reconstruction, and why the heartbeat exists.
+Peak system memory 21.2 GB, refinement off. 675 triangles per thousand dense points is
+the ratio to expect; the mesh follows the cloud almost exactly, which was confirmed by
+projecting both onto the same three planes and comparing. That also means it inherits
+everything the glass table did to the cloud: what comes out is a faithful mesh of a
+tabletop with a mug on it, and the mug is a small part of it. **`cup-1` is a good
+pipeline test and a poor quality test** — judge reconstruction quality on the turnaround
+footage when it exists, not on this.
 
 **Cancellation.** Killing a stage that shelled out to a child kills the whole process
 tree — verified with `tasklist`, no orphan survived. Now also covered for a child that
@@ -398,6 +415,55 @@ polling job state can therefore read the record before the results land, and
 
 ---
 
+**6.19 Image paths inside a `.mvs` are relative to the *working folder*.**
+`scene_dense.mvs` names its photographs `undistorted/images/cup/000019.jpg`, and OpenMVS
+resolves that against `-w`, not against the directory the scene file sits in — confirmed
+by reading the bytes of a real one. `TextureMesh` is where it bites, being the only mesh
+tool that reads pixels, and it reports a missing image for a file that is plainly there.
+`mesh.py` hardlinks `dense/undistorted` into its scratch and makes *that* the working
+folder rather than pointing `-w` at the committed `dense/`, because each tool also drops
+its log into the working folder and a failed run would otherwise litter a finished
+stage's output.
+
+**6.20 An OpenMVS percentage is far more often a statistic than progress.** `PERCENT_RE`
+was `(\d{1,3})%`, which reads `35867 points inside ROI (71.46%)` as **46%** — it matches
+the two digits before the sign rather than the number they belong to. Worse, v2.4.0 emits
+no marching percentage at all: of the 1,144 lines the cup densify wrote, six carried a
+percent sign and every one was a statistic. So the dense stage's bar jumped to ~0.46 in
+its first second and sat there for the remaining 3m32s. The regex is fixed, but the real
+lesson is the design one: drive progress from a table of phase markers with a monotonic
+floor, and beat a heartbeat with elapsed time underneath it, so a tool that says nothing
+for four minutes reads as working rather than wedged.
+
+**6.21 The mesh is written to `<-o with its extension stripped> + <export type>`, and the
+`.mvs` that `-o` names may never be written at all.** It is skipped when the archive type
+is the default and the scene was loaded in interface format — exactly this pipeline:
+`-o mesh.ply` produced `mesh.ply` and no `mesh.mvs`. The extension is chosen by a
+different flag from the one that names the file, and nothing may chain on `-o`; each tool
+gets the original `dense/scene_dense.mvs` plus `-m <mesh>`. Discover the output, as
+`dense.py:_find_cloud` and `mesh.py:_find_mesh` both do.
+
+**6.22 `dense/scene_dense.mvs` carries only the *sparse* cloud.** Its own save line reads
+`50189 points, 0 vertices, 0 faces`; the 738,015 dense points live beside it in
+`scene_dense.ply`, with their per-point `view_indices`. So `ReconstructMesh -p` is
+mandatory rather than optional — without it the graph cut runs happily on a fifteenth of
+the data and nothing in the log calls it a mistake.
+
+**6.23 A textured GLB's connected components are texture seams, not geometry.**
+`TextureMesh` splits vertices at every atlas patch boundary, so the cup mesh reports
+**11,015 loose parts** as a GLB — against TextureMesh's own 10,848 patches — with the
+largest at 0.5%, and **7 components with 99.5% in one piece** as `mesh.ply`. Blender
+imports the GLB with 337,819 vertices against the PLY's 249,022 for the same surface. The
+export stage's "largest connected component" step must therefore run on
+`mesh_untextured`, or merge by distance first; run on the GLB it keeps 0.5% of the model
+and silently throws the subject away.
+
+**6.24 A `.glb` from OpenMVS is not self-contained.** It writes the atlas beside it as
+`<stem>_0.png` and references it by relative URI, so the mesh is two files. Both are
+recorded as artifacts and both must be served — which works because they land in the same
+directory, so `GLTFLoader` resolves the sidecar against the mesh's own URL. Confirmed in
+the browser: loading the mesh fetches the `.png` too.
+
 ## 7. The smoke test: `cup-1`
 
 **Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:**
@@ -434,11 +500,11 @@ pair from §5. Keep them; they are the regression test for slot alignment.
 
 ## 8. Next steps
 
-Three milestones remain. **Take M11 first**: it continues the chain that is already
-proven, in the module pattern that already exists, and gets a printable object out the far
+Two milestones remain — M11 is built. **Take M12 next**: it continues the chain that is
+now proven all the way to a textured surface, and gets a printable object out the far
 end. M9 is the hardest and the only one the face scan strictly requires.
 
-### M11 — Mesh
+### M11 — Mesh ✅ built
 
 `ReconstructMesh` → `RefineMesh` → `TextureMesh`, over `dense/scene_dense.mvs`.
 

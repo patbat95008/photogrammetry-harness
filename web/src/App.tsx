@@ -3,6 +3,7 @@ import ClipsPage from "./components/ClipsPage";
 import DensePage from "./components/DensePage";
 import DoctorPage from "./components/DoctorPage";
 import ExtractPage from "./components/ExtractPage";
+import MeshPage from "./components/MeshPage";
 import RunsPage from "./components/RunsPage";
 import SelectPage from "./components/SelectPage";
 import SparsePage from "./components/SparsePage";
@@ -18,6 +19,7 @@ const BUILT_STAGES: Record<string, () => JSX.Element | null> = {
   select: SelectPage,
   sparse: SparsePage,
   dense: DensePage,
+  mesh: MeshPage,
 };
 
 const STAGES = [

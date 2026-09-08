@@ -21,6 +21,7 @@ import pytest
 from pgh.ply import (
     PlyError,
     PointCloud,
+    count_elements,
     count_vertices,
     read_header_text,
     read_point_cloud,
@@ -297,3 +298,69 @@ def test_reads_the_real_openmvs_dense_layout(tmp_path: Path) -> None:
     assert len(back) == n
     assert np.allclose(back.xyz, cloud.xyz, atol=1e-6)
     assert (back.rgb == cloud.rgb).all(), "colour must not be read as normals"
+
+
+# -- meshes ------------------------------------------------------------------
+#
+# The mesh stage measures its output in faces, and the only format every OpenMVS mesh
+# tool can write is PLY -- so the face count comes from here rather than from the log,
+# which is not guaranteed to survive a failed run.
+
+
+def write_mesh(path: Path, vertices: np.ndarray, faces: list[tuple[int, ...]]) -> None:
+    """A minimal binary mesh PLY, laid out the way ReconstructMesh writes one."""
+    import struct
+
+    header = [
+        "ply",
+        "format binary_little_endian 1.0",
+        f"element vertex {len(vertices)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        f"element face {len(faces)}",
+        "property list uchar uint vertex_indices",
+        "end_header\n",
+    ]
+    body = vertices.astype("<f4").tobytes()
+    for face in faces:
+        body += struct.pack("<B", len(face))
+        body += b"".join(struct.pack("<I", i) for i in face)
+    path.write_bytes("\n".join(header).encode("ascii") + body)
+
+
+def test_face_count_is_read_from_the_header(tmp_path: Path) -> None:
+    vertices = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=np.float32)
+    path = tmp_path / "mesh.ply"
+    write_mesh(path, vertices, [(0, 1, 2), (0, 2, 3)])
+
+    assert count_elements(path) == (4, 2)
+
+
+def test_a_point_cloud_has_no_faces(tmp_path: Path) -> None:
+    path = tmp_path / "cloud.ply"
+    write_point_cloud(path, make_cloud(50))
+
+    assert count_elements(path) == (50, 0)
+
+
+def test_a_mesh_vertex_block_is_read_without_running_into_the_faces(
+    tmp_path: Path,
+) -> None:
+    """The face element's list property must not make the reader think vertices vary.
+
+    A mesh's variable-length list lives on the face element, and _parse_header records
+    properties only while it is inside the vertex element. If that ever changed, a mesh
+    would take the variable-stride path, walk into the face block looking for
+    coordinates, and return points that are really packed triangle indices.
+    """
+    vertices = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=np.float32
+    )
+    path = tmp_path / "mesh.ply"
+    write_mesh(path, vertices, [(0, 1, 2), (0, 2, 3)])
+
+    back = read_point_cloud(path)
+
+    assert len(back) == 4
+    assert np.allclose(back.xyz, vertices)
