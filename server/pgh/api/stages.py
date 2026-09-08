@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import ValidationError
 
 from ..fingerprint import evaluate
+from .. import sam2rt
 from ..jobs import runner
 from ..manifest import StageId, StageState
 from ..stages.planned import planned_for
@@ -110,6 +111,10 @@ def run_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any
         raise HTTPException(status_code=409, detail=blockers)
 
     try:
+        # The mask preview keeps a model resident between clicks. Hand that memory
+        # back before a stage starts, so a densify is not competing with a
+        # predictor nobody is looking at any more.
+        sam2rt.release()
         job = runner.submit(run, sid)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None

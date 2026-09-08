@@ -6,6 +6,7 @@ import ExportPage from "./components/ExportPage";
 import ExtractPage from "./components/ExtractPage";
 import MeshPage from "./components/MeshPage";
 import RunsPage from "./components/RunsPage";
+import MaskPage from "./components/MaskPage";
 import SelectPage from "./components/SelectPage";
 import SparsePage from "./components/SparsePage";
 import StageStub from "./components/StageStub";
@@ -18,6 +19,7 @@ import StageStub from "./components/StageStub";
 const BUILT_STAGES: Record<string, () => JSX.Element | null> = {
   extract: ExtractPage,
   select: SelectPage,
+  mask: MaskPage,
   sparse: SparsePage,
   dense: DensePage,
   mesh: MeshPage,

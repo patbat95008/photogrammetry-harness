@@ -1105,3 +1105,113 @@ button.primary:disabled {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* -- mask stage ---------------------------------------------------------- */
+
+.mask-editor {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin: 12px 0 20px;
+}
+
+/* The dots are positioned against this, so it has to be the image's own box. */
+.mask-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.mask-frame img {
+  max-height: 420px;
+  width: auto;
+  cursor: crosshair;
+  border-radius: 6px;
+}
+
+.mask-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+
+.mask-dot.include { background: #38d16a; }
+.mask-dot.exclude { background: #e2554f; }
+
+.mask-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.mask-review-controls {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.mask-detail {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  margin: 12px 0;
+}
+
+.mask-canvas {
+  border-radius: 6px;
+  max-width: 420px;
+  height: auto;
+}
+
+/* The cutout view has real transparency, so it needs something behind it. */
+.mask-canvas.cutout {
+  background-image:
+    linear-gradient(45deg, #2a2a2a 25%, transparent 25%),
+    linear-gradient(-45deg, #2a2a2a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2a2a2a 75%),
+    linear-gradient(-45deg, transparent 75%, #2a2a2a 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.mask-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.mask-cell {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.mask-cell img { width: 76px; height: auto; border-radius: 2px; }
+.mask-cell.iffy { border-color: #d8a13a; }
+.mask-cell.bad { border-color: #e2554f; }
+.mask-cell.on { border-color: #6ea8fe; }
+
+/* The preview mask sits over its own copy of the frame, tinted by the browser. */
+.mask-preview-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  mix-blend-mode: screen;
+  opacity: 0.55;
+  pointer-events: none;
+}

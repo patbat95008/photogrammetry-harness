@@ -28,6 +28,8 @@ export interface StageDetail {
   blocked_by: string[];
   runnable: boolean;
   skippable?: boolean;
+  /** Standing guidance from the stage, given how this run was captured. */
+  note?: string | null;
   preflight: string[];
 }
 
@@ -223,6 +225,20 @@ export default function StageShell({
     }
   }
 
+  async function toggleSkip() {
+    setError(null);
+    const action = detail?.state === "skipped" ? "unskip" : "skip";
+    try {
+      const res = await fetch(`/api/runs/${runId}/stages/${stageId}/${action}`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error((await res.json()).detail ?? res.statusText);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function start() {
     setError(null);
     try {
@@ -258,6 +274,31 @@ export default function StageShell({
 
       {error && <div className="banner bad">{error}</div>}
 
+      {detail.note && (
+        <div className="banner note">
+          <span className="dot accent-dot">●</span>
+          <div>
+            <strong>Because of how this run was captured</strong>
+            {detail.note}
+          </div>
+        </div>
+      )}
+
+      {detail.state === "skipped" && (
+        <div className="banner">
+          <span className="dot ok">●</span>
+          <div>
+            <strong>Skipped</strong>
+            <span className="muted">
+              Later stages treat this as satisfied and will run without it.
+            </span>
+          </div>
+          <button className="refresh" onClick={() => void toggleSkip()}>
+            Un-skip
+          </button>
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-head">
           <h3>
@@ -287,6 +328,15 @@ export default function StageShell({
             ) : (
               <button className="primary" disabled={blocked} onClick={() => void start()}>
                 {detail.state === "done" ? "Re-run" : "Run"}
+              </button>
+            )}
+            {/* Skipping used to live only in StageStub, so implementing a skippable
+                stage would have taken its skip button away while the API kept
+                accepting the call. Masking is the only skippable stage, and it is
+                exactly the one you skip. */}
+            {detail.skippable && detail.state !== "skipped" && !running && (
+              <button className="refresh" onClick={() => void toggleSkip()}>
+                Skip
               </button>
             )}
           </div>

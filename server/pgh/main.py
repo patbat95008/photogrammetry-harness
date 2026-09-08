@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .api import artifacts, clips, doctor, events, fs, runs, stages, sync
+from .api import artifacts, clips, doctor, events, fs, mask, runs, stages, sync
 from .jobs import runner
 from .stages import registry as _stage_registry  # noqa: F401 -- registers stages
 from .store import store
@@ -77,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(sync.router)
     app.include_router(fs.router)
     app.include_router(artifacts.router)
+    app.include_router(mask.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
