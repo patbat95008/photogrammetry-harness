@@ -19,7 +19,11 @@ from pydantic import BaseModel
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 TOOLS_DIR = PROJECT_ROOT / "tools"
-SAM2_DIR = PROJECT_ROOT / "sam2"
+# The checkout is deliberately NOT named "sam2". The server runs with the project
+# root as its working directory, so a directory of that name here shadows the
+# installed package: ``import sam2`` binds to the directory as a namespace package
+# and every submodule import then fails. See HANDOVER 6.28.
+SAM2_DIR = PROJECT_ROOT / "sam2-src"
 DATA_DIR = PROJECT_ROOT / "data"
 DOCS_DIR = PROJECT_ROOT / "docs"
 

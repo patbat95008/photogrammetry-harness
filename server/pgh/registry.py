@@ -197,11 +197,28 @@ def probe_sam2() -> dict[str, Any]:
             }
         )
 
+    # A bare ``import sam2`` is NOT enough to prove the package is usable, and this
+    # probe used to do exactly that. If the checkout is cloned to <root>/sam2 it
+    # shadows the installed package: with the project root as the working directory
+    # ``import sam2`` binds to the *directory* as a namespace package and succeeds,
+    # while every submodule import fails. The doctor then reported SAM 2 as healthy
+    # for a package that had never been loaded. Importing a real submodule is what
+    # distinguishes the two. See HANDOVER 6.28.
     importable = False
     import_error: str | None = None
+    package_path: str | None = None
     try:
-        import sam2  # noqa: F401
+        import sam2
 
+        from sam2.build_sam import build_sam2_video_predictor  # noqa: F401
+
+        package_path = sam2.__file__
+        if package_path is None:
+            raise RuntimeError(
+                "'import sam2' resolved to a namespace package rather than a module, "
+                "which means a directory named 'sam2' is shadowing the installed "
+                "package. The checkout must not be named 'sam2' -- see HANDOVER 6.28."
+            )
         importable = True
     except Exception as exc:  # pragma: no cover - environment dependent
         import_error = f"{type(exc).__name__}: {exc}"
@@ -209,9 +226,24 @@ def probe_sam2() -> dict[str, Any]:
     return {
         "package_importable": importable,
         "import_error": import_error,
+        "package_path": package_path,
+        # SAM 2's optional CUDA extension. It is not built here, and without it the
+        # predictor silently skips its own small-hole filling -- so the mask stage
+        # closes holes itself rather than trusting it. Reported because "a warning on
+        # every run that is not a defect" is worth being able to look up.
+        "compiled_extension": _sam2_extension_present(),
         "default_model": config.DEFAULT_SAM2_MODEL,
         "models": models,
     }
+
+
+def _sam2_extension_present() -> bool:
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("sam2._C") is not None
+    except Exception:  # pragma: no cover - environment dependent
+        return False
 
 
 def probe_torch() -> dict[str, Any]:

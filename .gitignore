@@ -20,11 +20,17 @@
 # --- SAM 2 -----------------------------------------------------------------
 # Upstream checkout plus ~1.5 GB of model weights. Has its own .git, so tracking
 # it here would make it a submodule by accident.
-#     git clone https://github.com/facebookresearch/sam2
-#     bash sam2/checkpoints/download_ckpts.sh
-#     .venv/Scripts/python.exe -m pip install -e ./sam2 --no-build-isolation
+#     git clone https://github.com/facebookresearch/sam2 sam2-src
+#     bash sam2-src/checkpoints/download_ckpts.sh
+#     .venv/Scripts/python.exe -m pip install -e ./sam2-src --no-build-isolation
+# Clone it as sam2-src, NOT sam2. The server's working directory is the project root,
+# so a directory named sam2 here shadows the installed package -- import sam2 then
+# binds to the directory as a namespace package and every submodule import fails,
+# while a bare "import sam2" still succeeds and makes the doctor look green.
+# See HANDOVER 6.28.
 # The checkpoint<->config pairing is pinned in server/pgh/config.py — a mismatched
 # pair loads without raising and produces poor masks.
+/sam2-src/
 /sam2/
 
 # --- OpenMVS source checkout -----------------------------------------------

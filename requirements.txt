@@ -6,7 +6,7 @@
 #   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu130
 #
 # SAM 2 itself is installed separately from the vendored checkout:
-#   pip install -e ./sam2 --no-build-isolation
+#   pip install -e ./sam2-src --no-build-isolation   (clone dir must NOT be named sam2)
 
 annotated-doc==0.0.5
 annotated-types==0.8.0
