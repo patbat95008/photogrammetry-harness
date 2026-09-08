@@ -276,13 +276,23 @@ class ExportStage(Stage):
         artifacts: dict[str, str] = {"report": "export/report.json"}
         for kind, name in (result.get("files") or {}).items():
             artifacts[f"model_{kind}"] = f"export/{name}"
+        # An OBJ is three files and the other two are useless on their own: a mesh
+        # downloaded without its .mtl and its texture is an untextured mesh. They are
+        # recorded under their own prefix rather than as models, so the page can offer
+        # them without calling a material file a model.
+        for kind, name in (result.get("sidecars") or {}).items():
+            artifacts[f"sidecar_{kind}"] = f"export/{name}"
         if result.get("turntable_frames"):
             artifacts["turntable"] = "export/turntable"
 
         # Blender reports the factor it actually applied, which for a measured dimension
         # is the only place it could have been worked out.
         applied = result.get("scale") or scale
-        metrics, warnings = _summarise(params, result, applied, scale_source, planarity, axis)
+        preferred = (run_dir / "export" / (result.get("files") or {}).get("glb", ""))             if (result.get("files") or {}).get("glb") else None
+        model_bytes = preferred.stat().st_size if preferred and preferred.is_file() else 0
+        metrics, warnings = _summarise(
+            params, result, applied, scale_source, planarity, axis, model_bytes
+        )
         (run_dir / "export" / "report.json").write_text(
             json.dumps({"metrics": metrics, "warnings": warnings}, indent=2), encoding="utf-8"
         )
@@ -361,13 +371,14 @@ def _commit(target: Path, scratch: Path) -> None:
     scratch.replace(target)
 
 
-def _summarise(
+def _summarise(  # noqa: PLR0913 -- every argument is a distinct measured fact
     params: ExportParams,
     result: dict,
     scale: float | None,
     scale_source: str,
     planarity: float | None,
     axis: list[float] | None,
+    model_bytes: int = 0,
 ) -> tuple[dict[str, Any], list[str]]:
     faces_in = int(result.get("faces_in") or 0)
     faces_out = int(result.get("faces_out") or 0)
@@ -383,6 +394,12 @@ def _summarise(
         "scale_source": scale_source,
         "turntable_frames": int(result.get("turntable_frames") or 0),
         "formats": sorted((result.get("files") or {}).keys()),
+        "sidecars": sorted((result.get("sidecars") or {}).keys()),
+        # What the viewer would have to download to show this. Blender writes vertex
+        # normals that the mesh stage's own file does not carry, so an export is
+        # substantially bigger than the mesh it came from -- 68 MB against 23 MB on
+        # cup-1 -- which is what the viewer's size gate is there for.
+        "model_bytes": model_bytes,
     }
     # Only when something actually measured it. Reporting "1.0 mm per unit" for an
     # unscaled export states a scale that was never established.

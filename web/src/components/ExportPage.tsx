@@ -79,7 +79,13 @@ export default function ExportPage() {
         const downloads = Object.entries(artifacts).filter(([key]) =>
           key.startsWith("model_"),
         );
+        // An OBJ needs its .mtl and its texture to be an OBJ at all. They are not
+        // models, so they are listed apart rather than sitting beside GLB and STL.
+        const sidecars = Object.entries(artifacts).filter(([key]) =>
+          key.startsWith("sidecar_"),
+        );
         const glb = artifacts.model_glb;
+        const modelBytes = Number(metrics.model_bytes ?? 0) || undefined;
 
         return (
           <div className="stage-results">
@@ -99,6 +105,11 @@ export default function ExportPage() {
                 format="glb"
                 runId={runId}
                 faces={Number(metrics.faces_out ?? 0) || undefined}
+                // Without this the 40 MB "load it?" gate can never fire here, and
+                // this is the page that needs it: the cup export is 68 MB against a
+                // 23 MB mesh, because Blender writes normals the mesh stage's file
+                // does not have.
+                sizeBytes={modelBytes}
                 allowFlip={false}
                 height={480}
               />
@@ -114,6 +125,20 @@ export default function ExportPage() {
                   </a>
                 ))}
               </div>
+            )}
+
+            {sidecars.length > 0 && (
+              <p className="stage-note">
+                The OBJ needs these beside it, or it opens untextured:{" "}
+                {sidecars.map(([key, path], index) => (
+                  <span key={key}>
+                    {index > 0 && ", "}
+                    <a href={`/api/runs/${runId}/artifacts/${path}`} download>
+                      {String(path).split("/").pop()}
+                    </a>
+                  </span>
+                ))}
+              </p>
             )}
           </div>
         );

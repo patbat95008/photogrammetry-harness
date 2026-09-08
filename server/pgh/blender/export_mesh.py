@@ -247,17 +247,99 @@ def decimate(obj, target_faces):
     return len(obj.data.polygons)
 
 
+def base_colour_image(obj):
+    """The texture this mesh is painted with, wherever the importer parked it."""
+    for slot in obj.material_slots:
+        material = slot.material
+        if material is None or not material.use_nodes:
+            continue
+        for node in material.node_tree.nodes:
+            if node.type == "TEX_IMAGE" and node.image is not None:
+                return node.image
+    return None
+
+
+def rebuild_material_for_obj(obj, directory):
+    """Give the mesh a plain Principled BSDF with the atlas on Base Color.
+
+    OpenMVS marks its glTF material KHR_materials_unlit (HANDOVER 6.26), which the
+    importer turns into a node graph built around a Background/Emission-style shader.
+    The OBJ exporter only knows how to write a texture that reaches Base Color of a
+    Principled BSDF, so it exported the material as a flat grey Kd with no map_Kd at
+    all -- an untextured OBJ, from a mesh whose texture was sitting right there.
+
+    The image also arrives *packed* into the .blend with no path on disk, so even a
+    recognised material would have written a map_Kd pointing at a file that does not
+    exist. It has to be unpacked before path_mode='COPY' can put it beside the .obj.
+    """
+    image = base_colour_image(obj)
+    if image is None:
+        return None
+
+    if image.packed_file is not None:
+        image.filepath_raw = os.path.join(directory, "%s_texture.png" % image.name)
+        image.file_format = "PNG"
+        image.save()
+        image.unpack(method="REMOVE")
+        image.filepath = image.filepath_raw
+
+    material = bpy.data.materials.new("pgh_export")
+    material.use_nodes = True
+    tree = material.node_tree
+    principled = next(n for n in tree.nodes if n.type == "BSDF_PRINCIPLED")
+    texture = tree.nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    tree.links.new(principled.inputs["Base Color"], texture.outputs["Color"])
+
+    obj.data.materials.clear()
+    obj.data.materials.append(material)
+    log("rebuilt the material as a Principled BSDF for OBJ export")
+    return image
+
+
 def export(obj, directory, stem, formats):
+    """Write each requested format. Returns (models, sidecars).
+
+    An OBJ is three files, not one, and the other two are useless on their own --
+    a downloaded .obj without its .mtl and its texture is an untextured mesh. They
+    are reported separately from the models so the stage can record them all and the
+    page can offer them without pretending the .mtl is a model in its own right.
+    """
     activate(obj)
     written = {}
+    sidecars = {}
     if formats.get("glb"):
         path = os.path.join(directory, stem + ".glb")
         bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True)
         written["glb"] = os.path.basename(path)
     if formats.get("obj"):
         path = os.path.join(directory, stem + ".obj")
-        bpy.ops.wm.obj_export(filepath=path, export_selected_objects=True)
+        # GLB last, OBJ second: rebuilding the material for OBJ must not change what
+        # the GLB was written from.
+        rebuild_material_for_obj(obj, directory)
+        bpy.ops.wm.obj_export(
+            filepath=path,
+            export_selected_objects=True,
+            export_materials=True,
+            path_mode="COPY",
+            # The importer is told Y/Z so it converts nothing; the exporter defaults
+            # to NEGATIVE_Z/Y and would turn the OBJ ninety degrees relative to the
+            # GLB and STL written from the same mesh in the same run. Same class of
+            # error as 6.25, and just as invisible in the report.
+            forward_axis="Y",
+            up_axis="Z",
+        )
         written["obj"] = os.path.basename(path)
+        # Discover what came with it rather than predicting the names: the exporter
+        # chooses the .mtl name, and path_mode='COPY' chooses the texture's.
+        for name in sorted(os.listdir(directory)):
+            lower = name.lower()
+            if name == written["obj"]:
+                continue
+            if lower.endswith(".mtl"):
+                sidecars["obj_material"] = name
+            elif lower.endswith((".png", ".jpg", ".jpeg")) and stem in name:
+                sidecars["obj_texture"] = name
     if formats.get("stl"):
         path = os.path.join(directory, stem + ".stl")
         # STL carries geometry only: no colour, no units, no way to say what size it is.
@@ -265,7 +347,9 @@ def export(obj, directory, stem, formats):
         bpy.ops.wm.stl_export(filepath=path, export_selected_objects=True)
         written["stl"] = os.path.basename(path)
     log("exported " + ", ".join(sorted(written)))
-    return written
+    if sidecars:
+        log("sidecars: " + ", ".join("%s=%s" % kv for kv in sorted(sidecars.items())))
+    return written, sidecars
 
 
 def turntable(obj, directory, frames, resolution):
@@ -352,7 +436,9 @@ def main():
     low, high = bounds(obj)
     size = high - low
 
-    written = export(obj, job["out_dir"], job.get("stem", "model"), job.get("formats", {}))
+    written, sidecars = export(
+        obj, job["out_dir"], job.get("stem", "model"), job.get("formats", {})
+    )
     frames = turntable(
         obj,
         os.path.join(job["out_dir"], "turntable"),
@@ -372,6 +458,7 @@ def main():
                 "dropped_faces": dropped,
                 "dimensions": [round(size.x, 6), round(size.y, 6), round(size.z, 6)],
                 "files": written,
+                "sidecars": sidecars,
                 "turntable_frames": frames,
             }
         ),

@@ -344,6 +344,16 @@ def _best_model(run_dir: Path, manifest: RunManifest) -> Path:
     return max(submodels, key=lambda p: sum(f.stat().st_size for f in p.iterdir() if f.is_file()))
 
 
+def _mask_area_fraction(manifest: RunManifest) -> float | None:
+    """How much of each frame the masks keep, as the mask stage measured it."""
+    value = manifest.stages[StageId.MASK].metrics.get("mean_area_fraction")
+    try:
+        area = float(value)
+    except (TypeError, ValueError):
+        return None
+    return area if 0.0 < area < 1.0 else None
+
+
 def _mask_source(run_dir: Path, manifest: RunManifest) -> Path | None:
     """The canonical mask directory for this run, or None if it has no masks."""
     record = manifest.stages[StageId.MASK]
@@ -517,12 +527,25 @@ def _summarise(
     }
 
     warnings: list[str] = []
-    if registered and per_view < POINTS_PER_VIEW_WARN:
+    # On a masked run the subject really IS a small part of each frame, so the bar has
+    # to come down with it. cup-1 masked to 6.5% of frame produced 1,409 points a view
+    # and was a perfectly good cloud; judged against the unmasked figure it read as a
+    # failure, which is a warning that trains you to ignore warnings.
+    area = _mask_area_fraction(manifest) if masked else None
+    floor = POINTS_PER_VIEW_WARN * area if area else POINTS_PER_VIEW_WARN
+    if registered and per_view < floor:
+        detail = (
+            f" The masks keep about {area:.0%} of each frame, so the bar for this run "
+            f"is {round(floor)} rather than {POINTS_PER_VIEW_WARN}."
+            if area
+            else ""
+        )
         warnings.append(
             f"only about {round(per_view)} points per registered view. Depth "
             "estimation mostly failed rather than the object being small: the usual "
             "causes are too few overlapping neighbours, a textureless or shiny "
             "surface, or a resolution level so high there is nothing left to match."
+            + detail
         )
 
     total_ram = psutil.virtual_memory().total / 1e9

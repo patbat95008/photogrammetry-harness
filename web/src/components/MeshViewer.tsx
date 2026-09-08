@@ -181,7 +181,10 @@ export default function MeshViewer({
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [shading, setShading] = useState<Shading>("textured");
+  // Matte, not textured. A photogrammetric albedo is often dark, so the textured
+  // view can open near-black and read as a failed reconstruction; the page's own
+  // copy tells you to judge the surface matte first. Textured is one click away.
+  const [shading, setShading] = useState<Shading>("matte");
   const [dark, setDark] = useState(true);
   const [storedFlip, toggleFlip] = useFlip(allowFlip ? runId : undefined);
   const flipped = allowFlip && storedFlip;

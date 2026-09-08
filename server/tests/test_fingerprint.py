@@ -562,3 +562,28 @@ def test_the_dense_stage_still_refuses_masks_it_cannot_feed_to_openmvs():
     problems = DenseStage().preflight(manifest)
 
     assert any("OpenMVS-named view" in p for p in problems)
+
+
+def test_the_density_warning_comes_down_with_the_mask():
+    """A masked subject really is a small part of the frame.
+
+    cup-1 masked to 6.5% of frame gave 1,409 points a view and a perfectly good
+    cloud; judged against the unmasked bar it read as a failure, which is the kind
+    of warning that teaches you to ignore warnings.
+    """
+    from pgh.stages.dense import _summarise, DenseParams, POINTS_PER_VIEW_WARN
+
+    manifest = _run_with_masks(True)
+    manifest.stages[StageId.MASK].metrics = {"mean_area_fraction": 0.065}
+    manifest.stages[StageId.SPARSE].metrics = {"images_registered": 158}
+    per_view_points = 158 * int(POINTS_PER_VIEW_WARN * 0.5)
+
+    _m, masked_warnings = _summarise(
+        manifest, DenseParams(), per_view_points, 100, 0, 0, 1.0, masked=True
+    )
+    _m, plain_warnings = _summarise(
+        manifest, DenseParams(), per_view_points, 100, 0, 0, 1.0, masked=False
+    )
+
+    assert not any("points per registered view" in w for w in masked_warnings)
+    assert any("points per registered view" in w for w in plain_warnings)
