@@ -136,6 +136,17 @@ class Stage(ABC):
         """Reasons this stage cannot run right now. Empty means good to go."""
         return []
 
+    def note(self, manifest: RunManifest) -> str | None:
+        """Standing guidance for this stage, given how this run was captured.
+
+        Unlike a warning, this is true before the stage has ever run and does not
+        depend on its output -- masking being mandatory for a chair spin and a
+        mistake for an orbit is the motivating case. An unimplemented stage says the
+        same sort of thing through ``planned.py``; this is where it goes once the
+        stage exists, so implementing a stage does not delete its explanation.
+        """
+        return None
+
     @abstractmethod
     def run(self, ctx: StageContext) -> StageResult:
         """Do the work. Must be idempotent: re-running replaces prior outputs."""

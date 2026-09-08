@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pgh.manifest import CaptureMode, SegmentKind, StageId, StageState
+from pgh.stages.mask import MaskStage
 from pgh.stages.planned import planned_for
 from pgh.store import RunStore
 
@@ -72,8 +73,10 @@ def test_chair_spin_requires_masking(run_store):
     assert manifest.capture.mode is CaptureMode.SUBJECT_ROTATES
     assert manifest.capture.needs_background_mask
 
-    note = planned_for(StageId.MASK, manifest)["note"]
-    assert "REQUIRED" in note
+    # The prose lived in planned.py until M9 was built and now comes from the
+    # stage itself. Implementing a stage must not delete its explanation.
+    note = MaskStage().note(manifest)
+    assert note and "REQUIRED" in note
 
 
 def test_handheld_orbit_does_not_require_masking(run_store):
@@ -84,8 +87,8 @@ def test_handheld_orbit_does_not_require_masking(run_store):
     )
     assert not manifest.capture.needs_background_mask
 
-    note = planned_for(StageId.MASK, manifest)["note"]
-    assert "OPTIONAL" in note
+    note = MaskStage().note(manifest)
+    assert note and "OPTIONAL" in note
 
 
 def test_orientation_flip_survives_a_reload(run_store):

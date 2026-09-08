@@ -24,34 +24,11 @@ class PlannedStage:
 
 
 PLANNED: dict[StageId, PlannedStage] = {
-    StageId.MASK: PlannedStage(
-        label="Mask",
-        summary="Mark which pixels belong to the subject and which must be ignored.",
-        plan=[
-            "Click the subject on the first frame of each camera to seed SAM 2.",
-            "Propagate the mask through the frames in timeline order, chunked to bound "
-            "VRAM -- the video predictor's memory grows with sequence length.",
-            "Store one canonical mask per frame, then generate per-engine filename "
-            "views: COLMAP wants <name>.<ext>.png, OpenMVS wants <name>.mask.png.",
-            "Offer an overlay editor for corrections around ears, hair and chin.",
-        ],
-        conditional={
-            CaptureMode.SUBJECT_ROTATES: (
-                "This run has the subject rotating while the cameras stay put, so "
-                "masking is REQUIRED. The background is static in the room but moves "
-                "relative to the subject, which makes it the part behaving "
-                "inconsistently. Left in, the solver locks onto the room and the "
-                "subject never resolves."
-            ),
-            CaptureMode.CAMERA_ORBITS: (
-                "This run has the cameras orbiting a still subject, so masking is "
-                "OPTIONAL and usually best skipped. The background is rigid with "
-                "respect to the subject, so it supplies extra features and helps the "
-                "orbit close. Mask only if you specifically want the background "
-                "excluded from the final mesh."
-            ),
-        },
-    ),
+    # Empty: every stage in the DAG is implemented. The mask entry lived here until
+    # M9 was built, and its capture-mode prose moved to stages/mask.py:CAPTURE_NOTES
+    # rather than being deleted -- an implemented stage still needs to say why
+    # masking is mandatory for a chair spin and a mistake for an orbit. The Stage.note
+    # hook is where that goes now. Keep this module for the next unbuilt stage.
 }
 
 

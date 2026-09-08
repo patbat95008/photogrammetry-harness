@@ -9,12 +9,14 @@ from .extract import ExtractStage
 from .registry import registry
 from .dense import DenseStage
 from .export import ExportStage
+from .mask import MaskStage
 from .mesh import MeshStage
 from .select import SelectStage
 from .sparse import SparseStage
 
 registry.register(ExtractStage())
 registry.register(SelectStage())
+registry.register(MaskStage())
 registry.register(SparseStage())
 registry.register(DenseStage())
 registry.register(MeshStage())
@@ -23,6 +25,7 @@ registry.register(ExportStage())
 __all__ = [
     "DenseStage",
     "ExportStage",
+    "MaskStage",
     "ExtractStage",
     "MeshStage",
     "SelectStage",

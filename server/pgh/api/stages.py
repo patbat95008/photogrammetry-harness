@@ -58,6 +58,10 @@ def get_stage(stage_id: str, run: RunHandle = Depends(get_run)) -> dict[str, Any
         "skippable": sid in SKIPPABLE,
         "preflight": stage.preflight(manifest) if stage else [],
         "planned": None if stage else planned_for(sid, manifest),
+        # Standing guidance that survives the stage being implemented: an
+        # unbuilt stage explains itself through planned_for, a built one
+        # through Stage.note, and the page renders whichever it gets.
+        "note": stage.note(manifest) if stage else None,
     }
 
 

@@ -49,7 +49,9 @@ STAGE_ORDER: list[StageId] = [
 STAGE_DEPENDENCIES: dict[StageId, list[StageId]] = {
     StageId.EXTRACT: [],
     StageId.SELECT: [StageId.EXTRACT],
-    StageId.MASK: [StageId.SELECT],
+    # Extract, not select. Masking is seconds per hundred frames, and hanging it
+    # off select would discard every mask each time a selection knob moved.
+    StageId.MASK: [StageId.EXTRACT],
     StageId.SPARSE: [StageId.SELECT, StageId.MASK],
     StageId.DENSE: [StageId.SPARSE],
     StageId.MESH: [StageId.DENSE],
