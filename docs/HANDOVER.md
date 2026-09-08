@@ -1,11 +1,12 @@
 # Photogrammetry Harness — Handover
 
-**Status:** The whole chain, ingest → export, is **built and verified end to end on
-real footage**. Only masking (M9) remains.
-**Last verified:** 2026-09-08 on the `cup-1` orbit, plus synthetic ground-truth footage.
-**Tests:** 279 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
-**Next up:** §11 is the polish brief — what is unfinished, untested, or was decided once
-and is worth revisiting. Read it before starting anything.
+**Status:** Every stage is **built and verified end to end on real footage.** M9
+(masking) was the last one and landed 2026-09-08; there are no unimplemented stages left.
+**Last verified:** 2026-09-08 on the `cup-1` orbit — unmasked in `20260907-cup-1-2`,
+masked in `20260908-cup-masked` — plus synthetic ground-truth footage.
+**Tests:** 383 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`), ~35 s.
+**Next up:** the chair spin. §11 is what remains open, and it is now mostly things that
+need footage or hardware rather than code.
 
 ---
 
@@ -23,13 +24,14 @@ reconstruction.
 ```
 FFmpeg / stills → OpenCV/SAM 2 → COLMAP → OpenMVS → Blender
 ingest            select/mask     align    dense/mesh  cleanup
-  ✅                ✅ ⬜          ✅       ✅   ✅       ✅
+  ✅                ✅ ✅          ✅       ✅   ✅       ✅
 ```
 
-**The whole tower has now been proven.** A 60-second handheld orbit of a coffee cup
-became a 738,015-point dense cloud in which the mug, its handle, the brushes standing in
-it and the patio table are all plainly recognisable. §5 has the numbers, §7 has the
-capture. Everything from here is refinement of a chain that works.
+**The whole tower has now been proven, masking included.** A 60-second handheld orbit
+of a coffee cup became a 738,015-point dense cloud in which the mug, its handle, the
+brushes standing in it and the patio table are all plainly recognisable — and, masked,
+a 222,625-point cloud of the mug and brushes with the table gone. §5 has the numbers,
+§7 has the capture. Everything from here is refinement of a chain that works.
 
 ---
 
@@ -82,6 +84,7 @@ server/pgh/
   sync.py         audio cross-correlation
   files.py        source identity, ingest-root guard
   photos.py       reading a folder of stills: natural order, EXIF  ← §10
+  sam2rt.py       the ONLY module allowed to import sam2 (see §6.28)
   ply.py          point clouds in, browser-sized previews out; face counts  ← §6.13
   orient.py       up axis from the camera plane, scale from the rig baseline
   vendor/
@@ -98,16 +101,18 @@ server/pgh/
     registry.py   StageResolver the staleness engine runs against
     extract.py    Stage 1 ✅ — video frames, and the stills branch (§10)
     select.py     Stage 2 ✅ — sharpness, duplicates, coverage, manual overrides
+    mask.py       Stage 3 ✅ — SAM 2 click and track, chunked  ← §6.28
     sparse.py     Stage 4 ✅ — COLMAP align
     dense.py      Stage 5 ✅ — undistort, InterfaceCOLMAP, DensifyPointCloud
     mesh.py       Stage 6 ✅ — ReconstructMesh, RefineMesh, TextureMesh  ← §6.19-6.24
     export.py     Stage 7 ✅ — orient, scale, clean and write, via headless Blender
-    planned.py    copy for the mask stage, which is the only one left
+    planned.py    now empty: nothing is unimplemented. Kept for the next stage.
 web/src/          Vite + React + TS. StageShell auto-builds param forms from the
                   pydantic JSON schema — a new stage gets a working UI for free.
   components/viewer3d.tsx           framing, sizing and the flip, shared by both viewers
   components/PointCloudViewer.tsx   points, frusta and trajectory: sparse and dense
-  components/MeshViewer.tsx         surfaces: textured, matte and wireframe
+  components/MeshViewer.tsx         surfaces: matte, textured and wireframe
+  components/MaskPage.tsx           click to prompt, preview, review the track
   components/ExportPage.tsx         turntable, dimensions and downloads
 ```
 
@@ -122,18 +127,25 @@ frames/frames.jsonl   per-frame: dHash, luma, sync residual, duplicate flag
                       (timing fields are null for a photo set — no clock)
 thumbs/<group>/       256px webp
 select/selection.jsonl  per-frame keep/reject, with a reason and a sharpness score
+mask/canonical/<group>/<slot>.png    the mask: 8-bit, exactly {0,255}, 255 = keep
+mask/colmap/<group>/<slot>.jpg.png   hardlink view, COLMAP's naming (§6.7)
+mask/openmvs/<group>/<slot>.mask.png hardlink view, OpenMVS's naming (§6.7)
+mask/overlay/<group>/<slot>.webp     tinted thumbnails for the review strip
+mask/masks.jsonl        per-frame area, bbox, border contact, agreement with the previous
 sparse/images/<group>/  hardlink farm of just the selected frames
 sparse/model/0/         COLMAP model; artifacts["model_best"] names the winner
 sparse/poses.json       intrinsics and camera positions, for the frusta overlay
 sparse/registration.jsonl  which frames registered, and how many points each holds
 sparse/preview.ply      normalised cloud the viewer loads
-dense/undistorted/      rectified images plus the pinhole model OpenMVS needs
+dense/undistorted/      rectified images plus the pinhole model OpenMVS needs,
+                        and, on a masked run, a <stem>.mask.png beside each (§6.8)
 dense/scene_dense.ply   the full dense cloud
 dense/preview.ply       decimated to a cap, so the browser can hold it
 mesh/mesh.ply           the raw surface, untextured — count components on THIS (§6.23)
 mesh/mesh_textured.glb  the painted mesh, plus mesh_textured_0.png beside it (§6.24)
 export/model.glb        the finished object: cleaned, stood up, scaled
 export/model.stl        the same, for a slicer -- carries no units, so see §8 on scale
+export/model.obj        with model.mtl and its atlas beside it; all three or none
 export/turntable/       36 PNGs orbiting what was actually exported
 export/report.json      metrics and warnings, as written
 logs/                 per-stage run logs
@@ -160,8 +172,10 @@ and COLMAP 4.2 can exploit it (`rig_configurator`,
 the orbit close. COLMAP groups rig frames by **matching filename suffix across
 per-camera folders**, so the naming *is* the mechanism.
 
-Nothing depends on it yet — rigs are still unbuilt (§8) — but ingest was built so that
-adding them later needs no re-extraction. `timeline.py` is where this lives.
+Rigs themselves are still unbuilt (§8), but the naming is load-bearing already: masking
+produces one mask per camera group under the same slot names, and it is exactly that
+sharing which makes OpenMVS's flat `-m` mask folder unusable (§6.29). Ingest was built so
+adding rigs later needs no re-extraction. `timeline.py` is where this lives.
 
 Segments carry it: clips recorded simultaneously share a segment and a timeline; a
 separate pass (the crown shot) gets its own disjoint block of slot indices.
@@ -233,9 +247,20 @@ Inside `run()`:
 - Warnings are full prose sentences naming the cause *and* the consequence. That house
   style is consistent everywhere; match it.
 
+`Stage.note()` is the other hook worth knowing: standing guidance that depends on how
+the run was captured rather than on what the stage produced. An unbuilt stage says that
+sort of thing through `planned.py`; implementing it must not delete the explanation, so
+it moves here. `mask.py:CAPTURE_NOTES` is the example.
+
 Client side is two edits: a page component wrapping `StageShell` with a render-prop
 results view, and one entry in `BUILT_STAGES` in `App.tsx`. A new SSE event type must
 also be added to the `types` array in `useEventStream.ts` or it is dropped silently.
+
+**Check what implementing a stage takes *away*.** Adding `mask` to `BUILT_STAGES` routed
+around `StageStub`, which was the only place the skip button and the capture-mode note
+lived — so the one stage that is meant to be skipped would have lost its skip button
+while the API went on accepting the call. Both now live in `StageShell`, gated on
+`detail.skippable` and `detail.note`.
 
 ---
 
@@ -253,6 +278,7 @@ confidence 363.
 |---|---|---|
 | Extract | 241 frames at 4 fps, correctly oriented from a −90° display matrix | 22.6 s |
 | Select | 241 → **183** kept (43 too soft, 15 duplicates) | 3.1 s |
+| Mask | 241 frames, 2 chunks, no empty masks, 4.3–8.7% of frame | 69 s |
 | Align | **183 of 183 registered**, one model, 50,189 points | 11m 52s |
 | Dense | **738,015 points**, 4,033 per view, 2.6 GB of depth maps reclaimed | 3m 47s |
 | Mesh | **497,926 triangles** over 249,022 vertices, textured to one 4096² atlas | 4m 55s |
@@ -270,6 +296,33 @@ Dense peaked at 19.1 GB of system RAM at `resolution_level 1`. Matching was exha
 Everything §7 predicted about this capture showed up: the glass table produced a haze of
 phantom points beneath the mug, and the brushes came out as streaks rather than
 cylinders. Neither is a bug.
+
+**Masking, on the same footage** (`D:\pgh-runs60908-cup-masked`). Four clicks on
+frame 0, propagated through 241 frames in two chunks at **0.29 s a frame**, peaking at
+1.66 GB of VRAM with both offloads on. No empty masks; the mask covers 4.3–8.7% of each
+frame; the mug and brushes track cleanly through 1.5 revolutions, the handle appears and
+disappears correctly, and the glass table is excluded. Frames after the chunk boundary
+are as good as those before it, which is the seed carry-forward working on real footage.
+
+Then, deliberately, it made everything worse — and should have:
+
+| | unmasked | masked |
+|---|---|---|
+| Sparse points | 50,189 | **6,023** |
+| Registered | 183 of 183, one model | **158 of 183, two models** |
+| Dense points | 738,015 | **222,625** |
+| Cloud extent (99th pct) | 51.9 | **4.7** |
+
+`cup-1` is `camera_orbits`, where the background is rigid with the subject and supplies
+the features that close the orbit; masking it out throws them away. The mask stage warns
+about exactly this before you run it, and the warning was right. **For the chair spin the
+trade-off runs the other way, which is the entire reason the stage exists.** Note the
+things that improved: mean track length 6.04 → 8.86 and reprojection error 1.162 →
+1.016 px, because what is left is all subject.
+
+That 11× collapse in cloud extent is the proof the masks were actually applied. An exit
+code would have looked identical either way, and so would the point count if the masks
+had been silently dropped at only one of the three places they are consumed.
 
 Export in detail: the up axis came out of a plane fitted to 183 camera centres at
 planarity **0.043** — convincingly planar — and cross-checks against two independent
@@ -313,9 +366,9 @@ length preserved.
 
 ## 6. Expensive lessons — do not re-derive these
 
-**Numbering is stable — code comments cite these by number** (§6.4, §6.5, §6.7 and §6.8
-are referenced from `shell.py`, `colmap.py`, `openmvs.py` and `dense.py`). Append, don't
-renumber.
+**Numbering is stable — code comments cite these by number** (§6.4, §6.5, §6.7, §6.8,
+§6.28 and §6.29 are referenced from `shell.py`, `colmap.py`, `openmvs.py`, `dense.py`,
+`mask.py`, `sam2rt.py`, `config.py` and `.gitignore`). Append, don't renumber.
 
 ### Ingest
 
@@ -362,7 +415,16 @@ has a native `-m/--mask-path` expecting the OpenMVS form, plus `--ignore-mask-la
 **6.8 COLMAP does not undistort masks,** but OpenMVS consumes undistorted images. Run
 `image_undistorter` a second time over the mask view with **identical** scale/ROI flags,
 then threshold at 127. Drifting flags produce subtly wrong masks exactly where ears and
-hair live. **Not implemented — `DenseStage.preflight` blocks rather than ignoring masks.**
+hair live. **Implemented 2026-09-08.** "Identical" is now a type rather than a
+discipline: `colmap.UndistortGeometry` is frozen, holds all eight geometry flags, is
+passed to both calls, and every flag is emitted explicitly even at its default — the
+builder used to emit only `max_image_size` and rely on the binary for the rest, which is
+identical-by-omission and holds only until someone passes one of the others at one call
+site. `jpeg_quality` is deliberately outside the object: it changes the encoding, not
+where a pixel lands, so the mask pass raises it to 100 safely. `dense._check_mask_siblings`
+then *looks at the result*, because a smeared mask writes and runs without complaint.
+Verified on `cup-1`: masks come back exactly {0,255} with no mid-grey at all, at the
+rectified size (2531×1058 from 2320×1080), landing exactly on the subject.
 
 **6.9 Batch escaping.** A PowerShell pipeline inside `for /f` has to survive two levels of
 escaping; cmd hands PowerShell a literal `^|` and the check fails oddly. That logic lives
@@ -547,6 +609,43 @@ one. Suspicion is that a mesh carrying 10,848 tiny patches is what breaks the so
 a clean subject these may be worth turning back on; the parameters are there, and the
 check is the atlas, not the render.
 
+**6.28 A directory named `sam2` in the working directory shadows the `sam2` package.**
+*(the doctor actively pointed away from this one)* The checkout installs an editable
+package that lives at `<checkout>/sam2`, so cloning it to `<root>/sam2` puts a directory
+of the package's own name on `sys.path[0]` — the server runs with the project root as its
+cwd. `import sam2` then binds to the **directory** as an implicit namespace package and
+*succeeds*, with `__file__` set to `None`, and every submodule import fails afterwards
+with SAM 2's own "you're likely running Python from the parent directory" guard, a long
+way from the cause.
+
+The trap is the probe. `registry.probe_sam2` tested importability with a bare
+`import sam2`, which succeeds against the directory, so the Doctor page reported SAM 2 as
+healthy for a package that had never been loaded. It now imports a real submodule and
+asserts `__file__` is not `None`. The checkout is `sam2-src/`, `config.SAM2_DIR` points
+there, and renaming it means redoing the editable install because that records an
+absolute path.
+
+**6.29 `DensifyPointCloud -m/--mask-path` collides across camera groups.** Its own v2.4.0
+help says "path to folder containing mask images with '.mask.png' extension" — one flat
+folder — and it builds each name with `Util::getFileName`, which strips the directory
+*and* the extension. Two camera groups share the slot clock (§4.1), so
+`cam_high/000042.jpg` and `cam_eye/000042.jpg` both resolve to `000042.mask.png`, and one
+camera's masks are silently applied to the other. **It looks perfect on a single-camera
+run and is wrong on every rig**, which is the shape of omission somebody later "fixes" by
+adding the obviously-missing flag — so `openmvs.densify_point_cloud` refuses `mask_path`
+outright and names the alternative.
+
+The alternative is the sibling form: `<stem>.mask.png` written *beside* each undistorted
+image, which `MVS::Image::GetMaskFileName()` resolves against the full path. It has to be
+switched on with `--ignore-mask-label 0`; the default of −1 means "estimate a lens
+distortion mask" and ignores the files entirely, so `-m` alone reads nothing either way.
+
+**6.30 A stale stage is still *stored* as done.** Staleness is computed by the evaluator,
+not written back to the record, so a headless driver that submits a job and then polls
+for a terminal state returns immediately — before the worker has picked the job up. It
+has to observe `RUNNING` first. This is a hole in the §8 recipe and it silently produced
+a "successful" run that never ran.
+
 ## 7. The smoke test: `cup-1`
 
 **Run:** `D:\pgh-runs\20260907-cup-1-2` · **Source:**
@@ -583,63 +682,54 @@ pair from §5. Keep them; they are the regression test for slot alignment.
 
 ## 8. Next steps
 
-**One milestone remains.** M11 and M12 are built, so the chain runs from footage to a
-printable file. M9 (mask) is the hardest, the only one the face scan strictly requires,
-and the one that wants footage that has not been shot yet.
+**No milestones remain.** M9 landed 2026-09-08 and every stage in the DAG is
+implemented. What is left is the capture itself, and the items in §11 that need footage
+or hardware rather than code.
 
-For everything smaller than a milestone — untested paths, two known defects, and the
-judgement calls worth a second look — see **§11**.
+Design rationale lives where it is useful rather than here: `stages/mesh.py`,
+`stages/export.py` and `stages/mask.py` carry it in their module docstrings, `orient.py`
+explains the up axis and the scale, `sam2rt.py` explains the SAM 2 boundary, and
+everything learned the hard way is §6.19–6.30.
 
-### M11 and M12 — built
+### The chair spin, when you shoot it
 
-Both are done and verified on `cup-1` (§5). Their design rationale now lives where it is
-useful rather than here: `stages/mesh.py` and `stages/export.py` carry it in their module
-docstrings, `orient.py` explains the up axis and the scale, and everything that was
-learned the hard way is §6.19–6.27.
+1. **Run alignment without masks first.** It will very likely produce a background-locked
+   model, and seeing that failure in the viewer is what makes this stage's parameters
+   comprehensible. The align stage emits a warning saying exactly this when the mode is
+   `subject_rotates` and masking was skipped.
+2. Then mask and re-run, and compare. §5 has the same comparison on `cup-1`, where it
+   runs the other way.
 
-What they are **not** is fully exercised. The default path — GLB out, refinement off, no
-scale — is the only one that has run on real data. §11 lists what has never been tried.
+**What `cup-1` could not tell us about masking a head.** A head against a similarly-toned
+wall, hair against a dark background, and — the real one — **a chair back that moves
+rigidly with the subject.** SAM 2 will happily include the chair, which is correct
+tracking and wrong masking. Exclude points are the answer (`include: false` on a click),
+and the preview endpoint is there so you find that out in one round trip rather than
+after propagating the whole take. Prompt the *earliest* frame that looks wrong, not the
+worst one: re-prompting fixes its frame and the rest of its chunk, not what came before.
 
-### M9 — Mask
+**Use the preview.** On the mug, a single click selected one of the photographs printed
+on it and SAM 2 ranked the mug itself second. Four clicks fixed it. Nothing about that
+was visible from the click, and without the preview it costs a full propagation to find.
 
-SAM 2.1 large (`sam2.1_hiera_l.yaml` — the pairing is pinned in `config.py`; a mismatched
-pair loads *without raising* and produces poor masks). Click-to-prompt on frame 0 per
-camera, propagate in timeline order, **chunked at ~150 frames** carrying the last mask
-forward as the next chunk's seed — the video predictor's inference state grows with
-sequence length and will OOM 24 GB otherwise. Design progress as `chunks × frames` from
-the start.
+### Rigs — the biggest remaining quality lever
 
-Four things are already waiting for it:
-
-- `StageState.SKIPPED` and the skip button exist so a run can proceed without masks;
-  un-skipping should bring this stage back.
-- `SparseStage.external_inputs` already reports whether masks exist, so producing them
-  correctly invalidates the alignment rather than leaving it falsely fresh.
-- **`DenseStage.preflight` refuses to run when masks are present**, because undistorting
-  them (§6.8) is not implemented. Lifting that block is part of this milestone, not before
-  it.
-- `DensifyPointCloud` takes masks natively via `-m/--mask-path` (§6.7), so the OpenMVS side
-  may be less work than expected. COLMAP takes them via `--ImageReader.mask_path`
-  (per-image) or `--ImageReader.camera_mask_path` (one for all), and the dialect probe
-  already reports whether `mask_path` is supported.
-
-*For the chair spin, deliberately run alignment without masks first.* It will very likely
-produce a background-locked model, and seeing that failure in the viewer is what makes
-this stage's parameters comprehensible. The align stage already emits a warning saying
-exactly this when the mode is `subject_rotates` and masking was skipped.
+`sequential_matcher` in COLMAP 4.2 has `expand_rig_images`, and the matcher has
+`rig_verification` and `skip_image_pairs_in_same_frame`. The slot naming that makes this
+possible has been in place since ingest (§4.1) and nothing has used it yet. This is the
+single largest quality lever available for the two-camera chair spin, and it is unbuilt.
 
 ### Smaller things
 
-- **Rigs (§4.1).** `sequential_matcher` in COLMAP 4.2 has `expand_rig_images`, and the
-  matcher has `rig_verification` and `skip_image_pairs_in_same_frame`. The slot naming
-  that makes this possible is already in place. This is the single biggest quality lever
-  available for the two-camera chair spin.
 - **Sprite sheets.** The contact sheet loads individual thumbnails; fine at 241 frames,
-  will need batching at 3600.
+  will need batching at 3600. The mask review strip has the same shape and lazy-loads
+  instead, which is enough at 241 and probably not at 3600.
 - **Driving a stage headlessly** is useful for the long OpenMVS runs. The pattern that
-  worked: build a `JobRunner(registry)`, `runner.start()`, `runner.submit(run, sid)`, then
-  poll `run.load().stages[sid].state` — *not* `run.io.load()` (§6.17), and not `job.state`
-  (§6.18). Stop the web server first or it will overwrite you.
+  works: build a `JobRunner(registry)`, `runner.start()`, `runner.submit(run, sid)`, then
+  poll `run.load().stages[sid].state` — *not* `run.io.load()` (§6.17), and not
+  `job.state` (§6.18). **Wait to see `RUNNING` before accepting a terminal state**
+  (§6.30): a stale stage is still stored as done, so a naive poll returns before the
+  worker has started. Stop the web server first or it will overwrite you.
 
 ---
 
@@ -653,16 +743,21 @@ exactly this when the mode is `subject_rotates` and masking was skipped.
   footage is unaffected (cup-1: 6%).
 - **The vocabulary tree in `data/` is unusable** and matching falls back to exhaustive. Not
   a defect — see §6.11. The doctor reports it.
-- **The dense stage refuses to run when masks are present** (§6.8), by design. See §8.
+- **The dense stage undistorts masks in a second pass** (§6.8), implemented 2026-09-08.
+  It refuses only when masks are recorded but the OpenMVS-named view is missing.
 - **`model_analyzer` contributed nothing on the cup run** — `mean_observations_per_image`
   came back null, so the metrics fall back to values parsed from the text model. Harmless,
   and every number that matters is present, but the parser expects a format the binary may
   not be emitting.
-- **`opencv-5.0.0-windows.exe`** (186 MB) is still in the project root and unused — OpenCV
-  comes from pip. Safe to delete.
 - **`openMVS - Source/`** is a source checkout at `develop`, months ahead of the v2.4.0
   prebuilt binaries actually in use. Do not mix scene files between versions, and do not
-  trust its option lists (§8, M11).
+  trust its option lists. It *is* useful for reading how a flag behaves — `-m`'s
+  filename collision (§6.29) was found there — but confirm against the v2.4.0 binary's
+  own `--help` log before relying on it.
+- **SAM 2's compiled `_C` extension is not built here**, so it skips its own small-hole
+  filling with a `UserWarning` on every masking run. Not a defect, and not fixable
+  without a build toolchain — the mask stage closes holes itself (`close_holes_px`)
+  rather than trusting it. The doctor reports whether it is present.
 - **Line endings are mixed** across the tree — some files CRLF, some LF. `.gitattributes`
   now normalises them on checkout, but `web/src/App.tsx` is CRLF where its neighbours are
   LF. Match whatever the file you are editing already uses.
@@ -732,100 +827,78 @@ guidance.
 
 ---
 
-## 11. Polish pass — open items and open questions
+## 11. What is still open
 
-Written 2026-09-08, at the point where the chain runs end to end and nothing is known to
-be broken on the default path. This is the brief for a dedicated polish session.
+Rewritten 2026-09-08 at the end of the polish session that built M9. The items below are
+what survived it; everything else in the old §11 was either fixed or turned out to be
+wrong about which page it applied to.
 
-**The one thing to understand first:** only one route through the pipeline has ever run on
-real data — GLB out, refinement off, no scale, on `cup-1`. Everything below is either a
-path that has never been taken or a judgement that was made once and not revisited.
+**The one thing to understand first:** the pipeline has now run masked and unmasked, on
+one capture, of a mug. It has never seen a face, a chair, or two cameras.
 
-### A. Defects — known wrong, diagnosed, not fixed
+### A. Needs footage or hardware, not code
 
-1. **`export_obj` writes an untextured OBJ.** Confirmed 2026-09-08: `model.mtl` comes out
-   with no `map_Kd` at all — a grey `Kd` and nothing else — and no image is written beside
-   it. The cause is almost certainly that Blender imports the GLB's `KHR_materials_unlit`
-   material into a node graph the OBJ exporter does not recognise as a diffuse texture, so
-   it exports the material as flat colour. Likely fix: before `wm.obj_export`, rebuild the
-   material as a Principled BSDF with the atlas on Base Color, and pass
-   `path_mode='COPY'` so the image lands next to the `.obj`. The parameter description
-   currently promises "its material and texture", so either the export or the copy is
-   wrong.
-2. **A written `.mtl` is not recorded as an artifact.** `export.py` records only
-   `model_<kind>` keys, so even a correct OBJ would be offered for download without its
-   material file. `.mtl` is already in the artifact allowlist; only the recording is
-   missing.
-
-### B. Paths that have never been exercised
-
-None of these are known broken. They are simply untested, and this codebase's own
-experience is that untested paths in it fail silently rather than loudly.
-
-3. **`RefineMesh` has never run.** The parameters exist and the argv builder is tested, but
-   no refinement has ever completed. `REFINE_PHASES` in `mesh.py` is explicitly marked as
+1. **Rigs have never been used** (§8). The slot clock exists, COLMAP 4.2 has the flags,
+   nothing calls them. Biggest quality lever left for the two-camera spin.
+2. **`RefineMesh` has never run.** `REFINE_PHASES` in `mesh.py` is still marked as
    inferred from the tool's output format rather than read off a real run — unlike the
-   reconstruct and texture tables, which are. Unknown: runtime, peak memory, whether
-   `refine_on_gpu` works at all, and whether those markers ever match. Run it once at
-   `refine_resolution_level=1` and record the numbers in §5, as the other stages have.
-4. **`MeshParams.export_type` of `obj` or `ply` has never run.** That means `MeshViewer`'s
-   `MTLLoader`/`OBJLoader` path and its `PLYLoader` path have never loaded real output, and
-   `_find_textures`' OBJ branch has never seen a real `<name>_<material>_map_Kd.jpg`.
-   These are the documented fallback if GLB ever disappoints, so they should work.
-5. **Neither scale path has run.** `baseline` needs two-camera rig footage, which does not
-   exist yet. `manual` needs a measured dimension and has never been driven end to end —
-   worth doing on the cup with a ruler, since it is the only route to real size for a
+   reconstruct and texture tables, which are measured. Unknown: runtime, peak memory,
+   whether `refine_on_gpu` works at all, and whether those markers ever match. Deliberately
+   not run this session. **Do not read the table as tested.**
+3. **Neither scale path has run end to end.** `baseline` needs two-camera rig footage.
+   `manual` needs a measured dimension and is the only route to real size for a
    single-camera orbit.
-6. **No exported STL has been opened in a slicer.** Orientation and scale were verified by
-   measurement and by orthographic renders, not by the tool that will actually consume it.
-7. **`target_faces` decimation and `largest_component_only=False` have never run.**
-8. **The viewer's 40 MB "load it?" gate never fires** on this run — the cup mesh is 23 MB.
-9. **Only Blender 5.2 has run the export.** All four installed versions (4.2, 4.4, 5.0,
-   5.2) were checked on 2026-09-08 and every operator the script uses exists in each, with
-   the axis parameters — and the EEVEE enum genuinely differs (`BLENDER_EEVEE_NEXT` on
-   4.2/4.4, `BLENDER_EEVEE` on 5.0/5.2), which `export_mesh.py` probes for rather than
-   hardcodes. So it should be portable; it has not been proven portable.
+4. **No exported STL has been opened in a slicer.** Orientation and scale were verified by
+   measurement, by orthographic render, and now by OBJ/STL bounding-box agreement — but
+   not by the tool that will actually consume it.
+5. **Only Blender 5.2 has run the export.** All four installed versions were checked for
+   operator and parameter availability on 2026-09-08 and the EEVEE enum difference is
+   probed rather than hardcoded, so it *should* be portable. It has not been proven so.
+6. **`target_faces` decimation and `largest_component_only=False` have never run.**
+7. **Masking a head is untested**, and it is not the same problem as masking a mug — see
+   §8 on the chair back.
 
-### C. Judgement calls worth revisiting
+### B. Judgement calls worth revisiting
 
-10. **Seam levelling is off against OpenMVS's own default** (§6.27). That was decided on a
-    mesh with 10,848 texture patches, which is probably what breaks the solve. On a clean
-    subject it may work and would genuinely improve the texture. Retry it on the turnaround
-    footage — and check the **atlas**, not the render: the failure hides in the patch
-    interiors while the padding keeps the photograph.
-11. **The mesh viewer opens on Textured**, which for a dark texture is a near-black view.
-    The page's own copy says to look at it matte first. Defaulting to Matte would match the
-    advice; it is a one-line change that was deliberately not made unilaterally.
-12. **The turntable renders the unlit texture**, so it inherits whatever the texture looks
-    like. As a *record of what was exported* that is honest, but a matte turntable would be
-    easier to judge shape from. Possibly both.
-13. **Nothing isolates the subject from what it is standing on.** For `camera_orbits` the
-    background is rigid with the subject, so it reconstructs, meshes and exports as one
-    connected shell — `largest_component_only` cannot separate a mug from the table it sits
-    on. Masking (M9) is the real answer, but a "crop to a box" on the export stage would be
-    a cheap way to get a subject on its own out of an orbit capture. Open question whether
-    that is worth building or whether M9 makes it redundant.
+8. **Seam levelling is off against OpenMVS's own default** (§6.27). Decided on a mesh with
+   10,848 texture patches, which is probably what breaks the solve. On a clean subject it
+   may work and would genuinely improve the texture. Retry on the turnaround footage — and
+   check the **atlas**, not the render: the failure hides in the patch interiors while the
+   padding keeps the photograph.
+9. **The turntable renders the unlit texture**, so it inherits whatever the texture looks
+   like. Honest as a record of what was exported; a matte turntable would be easier to
+   judge shape from. Possibly both.
+10. **Masking now offers a second answer to "isolate the subject"** — the old §11 asked
+    whether a crop-to-box was worth building, and M9 makes it redundant for anything you
+    can click on. Still true that for `camera_orbits` an unmasked capture reconstructs the
+    subject and its table as one connected shell.
+11. **The drift threshold is half the take's own median, capped at 0.8** (`mask.py`).
+    Calibrated on one capture: cup-1 at 4 fps agrees with itself 74% frame to frame, and a
+    fixed 0.8 called 156 of 241 frames a failure. A 60 fps chair spin will sit much higher.
+    Worth re-checking that the relative rule still picks out the right frames there.
+12. **Booleans with no stored value render unchecked** in the generic params form, so a
+    field defaulting to `true` looks off until it is saved once. Pre-existing, affects
+    every stage, and most visible on mask, which has three of them.
 
-### D. Housekeeping
+### C. Housekeeping
 
-14. **`opencv-5.0.0-windows.exe` (195 MB) is still in the project root** and unused —
-    OpenCV comes from pip. Safe to delete; it has been listed as such since before M11.
-15. **No lint or format configuration exists** anywhere in the tree — no ruff, no black, no
-    eslint, no prettier. The Python is consistent by hand and the frontend is typechecked
-    by `tsc -b` under `strict`. Adding a formatter is a decision nobody has taken.
-16. **`model_analyzer` still contributes nothing** (§9) — pre-existing, harmless, and the
+13. **No lint or format configuration exists** anywhere — no ruff, black, eslint or
+    prettier. Deliberate: the tree is small, single-author and consistent by hand, and
+    adopting one at the point development stops would bury the real history under a
+    mechanical diff. The frontend is typechecked by `tsc -b` under `strict`.
+14. **`model_analyzer` still contributes nothing** (§9) — pre-existing, harmless, and the
     numbers that matter come from the text-model parse instead.
-17. **Watch `test_jobs.py` under load.** Its §6.18 race was fixed on 2026-09-08 and it has
-    been clean in 16 consecutive isolated runs since, but two failures were seen in one
-    batch running 50% slower than normal. If it reappears, the suspect is the same one:
-    something reading state before the manifest has committed.
+15. **Watch `test_jobs.py` under load** (§9). Clean throughout this session, but its race
+    was only fixed on 2026-09-08.
+16. **The frontend has no tests at all.** `tsc -b` is the only gate. The mask page's canvas
+    compositing, the loader branching in `MeshViewer`, and the size gate are all unverified
+    except by hand.
 
 ### What is genuinely finished
 
-Worth saying plainly, so the polish pass does not re-litigate it. Ingest, select, align,
-dense, mesh and export all run end to end on real footage and are covered by 279 tests.
-The staleness engine is correct across the whole DAG including `flip_x` (checked on the
-live run: it invalidates export and nothing else). Orientation is recovered and verified
-three ways — the camera-plane fit sits 9.3° from the mean of the cameras' own up vectors
-and 7° from the tabletop's normal, neither of which it uses. Texturing is correct. The
-scratch-then-commit discipline holds: a mesh run leaves `dense/` byte-identical.
+Worth saying plainly so it is not re-litigated. Ingest, select, **mask**, align, dense,
+mesh and export all run end to end on real footage and are covered by 383 tests. The
+staleness engine is correct across the whole DAG, including `flip_x` and including masks
+appearing and disappearing. Orientation is recovered and verified three ways. Texturing is
+correct, and the OBJ now carries it. Masks reach both engines under both naming
+conventions and survive undistortion. The scratch-then-commit discipline holds.
