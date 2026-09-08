@@ -3,7 +3,7 @@
 **Status:** The whole chain, ingest → export, is **built and verified end to end on
 real footage**. Only masking (M9) remains.
 **Last verified:** 2026-09-07 on the `cup-1` orbit, plus synthetic ground-truth footage.
-**Tests:** 277 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
+**Tests:** 279 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
 
 ---
 
