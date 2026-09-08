@@ -2,8 +2,10 @@
 
 **Status:** The whole chain, ingest → export, is **built and verified end to end on
 real footage**. Only masking (M9) remains.
-**Last verified:** 2026-09-07 on the `cup-1` orbit, plus synthetic ground-truth footage.
+**Last verified:** 2026-09-08 on the `cup-1` orbit, plus synthetic ground-truth footage.
 **Tests:** 279 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`).
+**Next up:** §11 is the polish brief — what is unfinished, untested, or was decided once
+and is worth revisiting. Read it before starting anything.
 
 ---
 
@@ -585,59 +587,18 @@ pair from §5. Keep them; they are the regression test for slot alignment.
 printable file. M9 (mask) is the hardest, the only one the face scan strictly requires,
 and the one that wants footage that has not been shot yet.
 
-### M11 — Mesh ✅ built
+For everything smaller than a milestone — untested paths, two known defects, and the
+judgement calls worth a second look — see **§11**.
 
-`ReconstructMesh` → `RefineMesh` → `TextureMesh`, over `dense/scene_dense.mvs`.
+### M11 and M12 — built
 
-Follow `stages/dense.py` closely — it is the template, and the awkward parts are already
-solved there: argv builders in `vendor/openmvs.py`, `_run_openmvs` for log-tailed
-progress, `_PeakMemory` for the RAM reading, scratch-then-commit.
+Both are done and verified on `cup-1` (§5). Their design rationale now lives where it is
+useful rather than here: `stages/mesh.py` and `stages/export.py` carry it in their module
+docstrings, `orient.py` explains the up axis and the scale, and everything that was
+learned the hard way is §6.19–6.27.
 
-**Do this first, before writing any builder.** Run each tool with `--help` in a scratch
-directory and read the log it drops, exactly as was done for the two tools already
-wrapped. The `openMVS - Source/` checkout in this repo tracks `develop` and is months
-ahead of the v2.4.0 binaries actually being run, so its documented options are not
-reliable. Record what you find in the `vendor/openmvs.py` module docstring, which already
-lists the flags for `InterfaceCOLMAP` and `DensifyPointCloud`.
-
-Expect `--export-type obj` to matter: an OBJ + MTL + texture PNG is far easier to feed to
-Blender at M12 than a textured PLY.
-
-**Viewer.** `PointCloudViewer` handles points only, so this needs a sibling `MeshViewer`.
-Three shading modes, per the original design: photographic texture, neutral matte, and
-wireframe. That is not decoration — a surface problem hidden by a convincing texture is
-the usual failure mode, and matte shading is what exposes it. three.js loads OBJ+MTL via
-`OBJLoader`/`MTLLoader` from `three/examples/jsm/`.
-
-Watch: `RefineMesh` is the slow step and the one most likely to exhaust memory. Expose its
-resolution/scale knob as prominently as `resolution_level` is exposed on dense, and
-consider defaulting refinement **off** until it has been run once successfully.
-
-### M12 — Export ✅ built
-
-Headless Blender: `blender -b -P <script>` (5.2 LTS is installed; note it is
-`required=False` in `config.py`, so the export stage must check for it in `preflight`).
-Largest connected component, decimate, scale, orient and centre, then GLB/OBJ/STL plus a
-turntable render.
-
-**Orientation is recoverable, and worth doing properly.** COLMAP's world frame is
-arbitrary — the cup model comes out lying on its side. But the camera centres in
-`sparse/poses.json` lie in a plane, and that plane's normal *is* the up axis for both
-capture modes: the cameras orbit the subject horizontally in one, and the subject rotates
-about a vertical axis in the other. Fit a plane to the camera centres (or take the axis of
-least variance, which is the cheap version) and you have "up" without asking the user. The
-sign is ambiguous, and that half is already resolved: `capture.flip_x` in `project.json`
-records a 180° turn about +X, defaulting on, set from the `Flip` toggle in the cloud
-viewer's toolbar. Apply it about the model centre so the export comes out the way up it
-was reviewed, and do not ask the user again. It is deliberately absent from every
-fingerprint (nothing upstream reads it); add it to the export stage's `external_inputs()`
-when that stage is written — at creation, so it cannot rehash anything that exists.
-
-**Scale.** `capture.baseline_mm` for a fixed-mount rig — that measurement is the only part
-that cannot be reconstructed afterwards, which is why the checklist nags about it. For
-`camera_orbits` there is nothing to scale from, so this needs either a ruler in frame or a
-manual "this dimension is N mm" input. Say so plainly in the UI rather than exporting
-something confidently mis-scaled.
+What they are **not** is fully exercised. The default path — GLB out, refinement off, no
+scale — is the only one that has run on real data. §11 lists what has never been tried.
 
 ### M9 — Mask
 
@@ -702,9 +663,17 @@ exactly this when the mode is `subject_rotates` and masking was skipped.
 - **`openMVS - Source/`** is a source checkout at `develop`, months ahead of the v2.4.0
   prebuilt binaries actually in use. Do not mix scene files between versions, and do not
   trust its option lists (§8, M11).
-- **Line endings are mixed** across the tree — some files CRLF, some LF, no
-  `.gitattributes`. Match whatever the file you are editing already uses.
-- **Blender is optional in the doctor** and only used at M12.
+- **Line endings are mixed** across the tree — some files CRLF, some LF. `.gitattributes`
+  now normalises them on checkout, but `web/src/App.tsx` is CRLF where its neighbours are
+  LF. Match whatever the file you are editing already uses.
+- **Blender is optional in the doctor** — `required=False` in `config.py`, because nothing
+  before the export stage needs it. That stage checks for it in `preflight` and says so.
+- **`server/pgh/blender/` is deliberately not a Python package.** No `__init__.py`, because
+  its contents run inside Blender's interpreter and can import neither `pgh` nor numpy.
+- **`test_a_silent_child_is_still_cancellable` is load-sensitive.** It passed 4/4 in
+  isolation but failed once in a full-suite run started immediately after a five-minute
+  TextureMesh and a Blender export. Timing, not logic — but worth knowing before trusting
+  a single red run.
 
 ---
 
@@ -755,3 +724,99 @@ than none.
 RAW and HEIC need a decoder that is not installed; the scanner names the files it could
 not read rather than skipping them quietly. `docs/capture-checklist.md` has the shooting
 guidance.
+
+---
+
+## 11. Polish pass — open items and open questions
+
+Written 2026-09-08, at the point where the chain runs end to end and nothing is known to
+be broken on the default path. This is the brief for a dedicated polish session.
+
+**The one thing to understand first:** only one route through the pipeline has ever run on
+real data — GLB out, refinement off, no scale, on `cup-1`. Everything below is either a
+path that has never been taken or a judgement that was made once and not revisited.
+
+### A. Defects — known wrong, diagnosed, not fixed
+
+1. **`export_obj` writes an untextured OBJ.** Confirmed 2026-09-08: `model.mtl` comes out
+   with no `map_Kd` at all — a grey `Kd` and nothing else — and no image is written beside
+   it. The cause is almost certainly that Blender imports the GLB's `KHR_materials_unlit`
+   material into a node graph the OBJ exporter does not recognise as a diffuse texture, so
+   it exports the material as flat colour. Likely fix: before `wm.obj_export`, rebuild the
+   material as a Principled BSDF with the atlas on Base Color, and pass
+   `path_mode='COPY'` so the image lands next to the `.obj`. The parameter description
+   currently promises "its material and texture", so either the export or the copy is
+   wrong.
+2. **A written `.mtl` is not recorded as an artifact.** `export.py` records only
+   `model_<kind>` keys, so even a correct OBJ would be offered for download without its
+   material file. `.mtl` is already in the artifact allowlist; only the recording is
+   missing.
+
+### B. Paths that have never been exercised
+
+None of these are known broken. They are simply untested, and this codebase's own
+experience is that untested paths in it fail silently rather than loudly.
+
+3. **`RefineMesh` has never run.** The parameters exist and the argv builder is tested, but
+   no refinement has ever completed. `REFINE_PHASES` in `mesh.py` is explicitly marked as
+   inferred from the tool's output format rather than read off a real run — unlike the
+   reconstruct and texture tables, which are. Unknown: runtime, peak memory, whether
+   `refine_on_gpu` works at all, and whether those markers ever match. Run it once at
+   `refine_resolution_level=1` and record the numbers in §5, as the other stages have.
+4. **`MeshParams.export_type` of `obj` or `ply` has never run.** That means `MeshViewer`'s
+   `MTLLoader`/`OBJLoader` path and its `PLYLoader` path have never loaded real output, and
+   `_find_textures`' OBJ branch has never seen a real `<name>_<material>_map_Kd.jpg`.
+   These are the documented fallback if GLB ever disappoints, so they should work.
+5. **Neither scale path has run.** `baseline` needs two-camera rig footage, which does not
+   exist yet. `manual` needs a measured dimension and has never been driven end to end —
+   worth doing on the cup with a ruler, since it is the only route to real size for a
+   single-camera orbit.
+6. **No exported STL has been opened in a slicer.** Orientation and scale were verified by
+   measurement and by orthographic renders, not by the tool that will actually consume it.
+7. **`target_faces` decimation and `largest_component_only=False` have never run.**
+8. **The viewer's 40 MB "load it?" gate never fires** on this run — the cup mesh is 23 MB.
+9. **Only Blender 5.2 has run the export.** All four installed versions (4.2, 4.4, 5.0,
+   5.2) were checked on 2026-09-08 and every operator the script uses exists in each, with
+   the axis parameters — and the EEVEE enum genuinely differs (`BLENDER_EEVEE_NEXT` on
+   4.2/4.4, `BLENDER_EEVEE` on 5.0/5.2), which `export_mesh.py` probes for rather than
+   hardcodes. So it should be portable; it has not been proven portable.
+
+### C. Judgement calls worth revisiting
+
+10. **Seam levelling is off against OpenMVS's own default** (§6.27). That was decided on a
+    mesh with 10,848 texture patches, which is probably what breaks the solve. On a clean
+    subject it may work and would genuinely improve the texture. Retry it on the turnaround
+    footage — and check the **atlas**, not the render: the failure hides in the patch
+    interiors while the padding keeps the photograph.
+11. **The mesh viewer opens on Textured**, which for a dark texture is a near-black view.
+    The page's own copy says to look at it matte first. Defaulting to Matte would match the
+    advice; it is a one-line change that was deliberately not made unilaterally.
+12. **The turntable renders the unlit texture**, so it inherits whatever the texture looks
+    like. As a *record of what was exported* that is honest, but a matte turntable would be
+    easier to judge shape from. Possibly both.
+13. **Nothing isolates the subject from what it is standing on.** For `camera_orbits` the
+    background is rigid with the subject, so it reconstructs, meshes and exports as one
+    connected shell — `largest_component_only` cannot separate a mug from the table it sits
+    on. Masking (M9) is the real answer, but a "crop to a box" on the export stage would be
+    a cheap way to get a subject on its own out of an orbit capture. Open question whether
+    that is worth building or whether M9 makes it redundant.
+
+### D. Housekeeping
+
+14. **`opencv-5.0.0-windows.exe` (195 MB) is still in the project root** and unused —
+    OpenCV comes from pip. Safe to delete; it has been listed as such since before M11.
+15. **No lint or format configuration exists** anywhere in the tree — no ruff, no black, no
+    eslint, no prettier. The Python is consistent by hand and the frontend is typechecked
+    by `tsc -b` under `strict`. Adding a formatter is a decision nobody has taken.
+16. **`model_analyzer` still contributes nothing** (§9) — pre-existing, harmless, and the
+    numbers that matter come from the text-model parse instead.
+
+### What is genuinely finished
+
+Worth saying plainly, so the polish pass does not re-litigate it. Ingest, select, align,
+dense, mesh and export all run end to end on real footage and are covered by 279 tests.
+The staleness engine is correct across the whole DAG including `flip_x` (checked on the
+live run: it invalidates export and nothing else). Orientation is recovered and verified
+three ways — the camera-plane fit sits 9.3° from the mean of the cameras' own up vectors
+and 7° from the tabletop's normal, neither of which it uses. Texturing is correct. The
+scratch-then-commit discipline holds: a mesh run leaves `dense/` byte-identical.
