@@ -112,6 +112,24 @@ def wait_for(predicate, timeout: float = 30.0, interval: float = 0.05) -> bool:
     return False
 
 
+def wait_for_record(run, stage_id, *states, timeout: float = 30.0) -> bool:
+    """Wait for the *manifest* to say so, not just the job.
+
+    HANDOVER 6.18: a job's terminal state is set just before the manifest is committed,
+    so reading project.json the moment ``job.state`` flips races the writer and can read
+    the previous state. That is the hazard the handover warns external callers about, and
+    this suite was falling into it -- test_jobs failed intermittently in roughly three
+    runs out of five, on whichever test happened to lose.
+
+    Waiting on ``run.load()`` is sufficient rather than merely likely: it takes the same
+    lock ``update()`` holds across mutate-then-save, so a caller cannot observe the new
+    state until the save has returned.
+    """
+    return wait_for(
+        lambda: run.load().stages[stage_id].state in states, timeout=timeout
+    )
+
+
 # -- tests -------------------------------------------------------------------
 
 
@@ -121,6 +139,7 @@ def test_successful_stage_commits_artifacts_and_fingerprint(run_store):
     try:
         job = runner.submit(run, StageId.EXTRACT)
         assert wait_for(lambda: job.state is JobState.SUCCEEDED)
+        assert wait_for_record(run, StageId.EXTRACT, StageState.DONE), "6.18"
     finally:
         runner.stop()
 
@@ -138,6 +157,7 @@ def test_failure_is_recorded_not_raised(run_store):
     try:
         job = runner.submit(run, StageId.EXTRACT)
         assert wait_for(lambda: job.state is JobState.FAILED)
+        assert wait_for_record(run, StageId.EXTRACT, StageState.FAILED), "6.18"
     finally:
         runner.stop()
 
@@ -364,6 +384,7 @@ def test_a_silent_child_is_still_cancellable(run_store):
         time.sleep(0.5)  # let the child actually be launched
         runner.cancel_stage(run.run_id, StageId.EXTRACT)
         assert wait_for(lambda: job.state is JobState.CANCELLED, timeout=30), job.state
+        assert wait_for_record(run, StageId.EXTRACT, StageState.CANCELLED), "6.18"
     finally:
         runner.stop()
 
@@ -424,6 +445,7 @@ def test_run_tool_raises_with_the_tool_named(run_store):
     try:
         job = runner.submit(run, StageId.EXTRACT)
         assert wait_for(lambda: job.state is JobState.FAILED, timeout=30)
+        assert wait_for_record(run, StageId.EXTRACT, StageState.FAILED), "6.18"
     finally:
         runner.stop()
 

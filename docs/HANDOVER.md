@@ -670,10 +670,15 @@ exactly this when the mode is `subject_rotates` and masking was skipped.
   before the export stage needs it. That stage checks for it in `preflight` and says so.
 - **`server/pgh/blender/` is deliberately not a Python package.** No `__init__.py`, because
   its contents run inside Blender's interpreter and can import neither `pgh` nor numpy.
-- **`test_a_silent_child_is_still_cancellable` is load-sensitive.** It passed 4/4 in
-  isolation but failed once in a full-suite run started immediately after a five-minute
-  TextureMesh and a Blender export. Timing, not logic — but worth knowing before trusting
-  a single red run.
+- **`test_jobs.py` used to fail intermittently, and the cause was §6.18.** Four of its
+  tests waited for `job.state` to reach a terminal value and then read `project.json` —
+  which is precisely the race the handover warns external callers about, since the job
+  flips just *before* the manifest commits. Measured at three failures in five isolated
+  runs, on whichever test happened to lose. Fixed 2026-09-08 by `wait_for_record`, which
+  waits on `run.load()` instead; that takes the same lock `update()` holds across
+  mutate-then-save, so it cannot observe the new state before the save returns. Clean in
+  16 consecutive runs afterwards. Two failures did occur in one batch whose runtimes were
+  50% above normal, so a residual sensitivity under heavy load is not ruled out.
 
 ---
 
@@ -810,6 +815,10 @@ experience is that untested paths in it fail silently rather than loudly.
     by `tsc -b` under `strict`. Adding a formatter is a decision nobody has taken.
 16. **`model_analyzer` still contributes nothing** (§9) — pre-existing, harmless, and the
     numbers that matter come from the text-model parse instead.
+17. **Watch `test_jobs.py` under load.** Its §6.18 race was fixed on 2026-09-08 and it has
+    been clean in 16 consecutive isolated runs since, but two failures were seen in one
+    batch running 50% slower than normal. If it reappears, the suspect is the same one:
+    something reading state before the manifest has committed.
 
 ### What is genuinely finished
 
