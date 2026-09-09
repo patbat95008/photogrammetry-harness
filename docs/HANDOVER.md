@@ -4,7 +4,7 @@
 (masking) was the last one and landed 2026-09-08; there are no unimplemented stages left.
 **Last verified:** 2026-09-08 on the `cup-1` orbit — unmasked in `20260907-cup-1-2`,
 masked in `20260908-cup-masked` — plus synthetic ground-truth footage.
-**Tests:** 383 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`), ~35 s.
+**Tests:** 391 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`), ~35 s.
 **Next up:** the chair spin. §11 is what remains open, and it is now mostly things that
 need footage or hardware rather than code.
 
@@ -312,6 +312,8 @@ Then, deliberately, it made everything worse — and should have:
 | Registered | 183 of 183, one model | **158 of 183, two models** |
 | Dense points | 738,015 | **222,625** |
 | Cloud extent (99th pct) | 51.9 | **4.7** |
+| Mesh vertices | 249,022 | **74,972** |
+| Exported faces | 495,490 in 7 shells | **149,885 in 1 shell** |
 
 `cup-1` is `camera_orbits`, where the background is rigid with the subject and supplies
 the features that close the orbit; masking it out throws them away. The mask stage warns
@@ -645,6 +647,22 @@ not written back to the record, so a headless driver that submits a job and then
 for a terminal state returns immediately — before the worker has picked the job up. It
 has to observe `RUNNING` first. This is a hole in the §8 recipe and it silently produced
 a "successful" run that never ran.
+
+**6.31 An artifact URL is stable but its contents are not.** Re-running a stage
+rewrites `mesh/mesh_textured.glb` at the same path. The responses carried an ETag and a
+Last-Modified but no `Cache-Control`, so the browser fell back to *heuristic* freshness —
+a fraction of the file's age — and served the copy it already had without asking. A stage
+that had just been re-run then showed its **previous** output, which reads as the
+pipeline ignoring the change rather than as a stale page. Reported from the outside as
+"the masked run doesn't carry over into the mesh phase"; the mesh was correct on disk the
+whole time.
+
+`Cache-Control: no-cache` is the fix and means "store it, but revalidate every time" —
+not "do not store". On its own it is expensive, because Starlette sends an ETag but does
+not itself answer `If-None-Match`, so every look re-sent the whole file: 4 MB a glance at
+a mesh, 36 PNGs a turn of the turntable. `artifacts._serve` answers the conditional
+request with a bodiless 304 and takes the ETag off the response Starlette built rather
+than recomputing it, so the two cannot drift.
 
 ## 7. The smoke test: `cup-1`
 
