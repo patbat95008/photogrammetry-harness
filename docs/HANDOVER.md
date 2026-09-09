@@ -4,7 +4,7 @@
 (masking) was the last one and landed 2026-09-08; there are no unimplemented stages left.
 **Last verified:** 2026-09-08 on the `cup-1` orbit — unmasked in `20260907-cup-1-2`,
 masked in `20260908-cup-masked` — plus synthetic ground-truth footage.
-**Tests:** 391 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`), ~35 s.
+**Tests:** 398 passing (`.venv\Scripts\python.exe -m pytest server/tests -q`), ~35 s.
 **Next up:** the chair spin. §11 is what remains open, and it is now mostly things that
 need footage or hardware rather than code.
 
@@ -660,9 +660,34 @@ whole time.
 `Cache-Control: no-cache` is the fix and means "store it, but revalidate every time" —
 not "do not store". On its own it is expensive, because Starlette sends an ETag but does
 not itself answer `If-None-Match`, so every look re-sent the whole file: 4 MB a glance at
-a mesh, 36 PNGs a turn of the turntable. `artifacts._serve` answers the conditional
-request with a bodiless 304 and takes the ETag off the response Starlette built rather
-than recomputing it, so the two cannot drift.
+a mesh, 36 PNGs a turn of the turntable. `api/serving.py:serve_file` answers the
+conditional request with a bodiless 304 and takes the ETag off the response Starlette
+built rather than recomputing it, so the two cannot drift.
+
+**It was never only the mesh viewer.** Every surface was audited afterwards and three
+more were wrong in the same way:
+
+| Surface | Was | Now |
+|---|---|---|
+| Artifacts, frames | no directive | `no-cache` + 304 |
+| **Clip poster** | no directive | `no-cache` + 304 |
+| **`index.html`** | no directive | `no-cache` + 304 |
+| **JSON reads** | no directive, no validator | `no-store` |
+| `/assets/*` | no directive | left alone, deliberately |
+| SSE, mask preview | already correct | unchanged |
+
+The shell mattered most: `index.html` is the map from URL to content-hashed asset, it is
+rewritten by every UI build, and a cached copy points at files the new build has already
+deleted — a blank app rather than a stale one. `/assets` is the one thing left cacheable
+*because* Vite content-hashes it: a changed file is a different URL, so a cached one
+cannot be wrong.
+
+JSON reads get `no-store` rather than `no-cache` because they carry no validator at all,
+so there is nothing for a revalidation to compare against. Applied by one middleware in
+`main.py` that fills the header in only when the handler has not set one, so the
+deliberate choices above stand. `test_artifacts.py` pins all of it, including a guard
+that fails if any endpoint reaches for `FileResponse` directly again — which is exactly
+how the poster was missed the first time.
 
 ## 7. The smoke test: `cup-1`
 

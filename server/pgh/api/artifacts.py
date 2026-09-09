@@ -11,17 +11,10 @@ from fastapi.responses import FileResponse
 
 from ..store import RunHandle
 from .deps import get_run
+from .serving import CACHE_CONTROL as ARTIFACT_CACHE_CONTROL
+from .serving import serve_file
 
 router = APIRouter(prefix="/api/runs/{run_id}", tags=["artifacts"])
-
-#: Artifact paths are stable but their CONTENTS are not: re-running a stage rewrites
-#: mesh/mesh_textured.glb at the same URL. With no explicit directive a browser falls
-#: back to heuristic freshness -- a fraction of the file's age -- and serves the
-#: previous version from cache without asking, so a re-run stage shows its old output
-#: and the pipeline looks broken rather than stale. "no-cache" does not mean "do not
-#: store": it means store it and revalidate every time, which the ETag answers with a
-#: bodiless 304. The turntable strip stays cheap and cannot show the wrong model.
-ARTIFACT_CACHE_CONTROL = "no-cache"
 
 #: What may be served out of a run directory, and as what. An allowlist rather than
 #: a denylist: a run directory also holds a COLMAP database and tens of gigabytes of
@@ -89,35 +82,6 @@ def list_frames(
     }
 
 
-def _serve(path: Path, media: str, request: Request) -> Response:
-    """Serve a file, revalidating rather than re-sending when nothing changed.
-
-    ``no-cache`` on its own would be correct and expensive: the browser asks every
-    time, and Starlette answers every time with the whole file, because it sends an
-    ETag but does not itself handle ``If-None-Match``. That is 4 MB per look at a mesh
-    and 36 PNGs per turn of the turntable. Answering the conditional request with a
-    bodiless 304 is what makes "always revalidate" affordable.
-
-    The ETag is taken off the response Starlette built rather than recomputed here, so
-    the two cannot drift apart if its derivation ever changes.
-    """
-    response = FileResponse(
-        path,
-        media_type=media,
-        stat_result=path.stat(),
-        headers={"Cache-Control": ARTIFACT_CACHE_CONTROL},
-    )
-    etag = response.headers.get("etag")
-    if etag and etag in [
-        tag.strip() for tag in (request.headers.get("if-none-match") or "").split(",")
-    ]:
-        return Response(
-            status_code=304,
-            headers={"ETag": etag, "Cache-Control": ARTIFACT_CACHE_CONTROL},
-        )
-    return response
-
-
 @router.get("/frames/{group}/{slot}")
 def get_frame(
     request: Request,
@@ -144,7 +108,7 @@ def get_frame(
     for path in candidates:
         if path.exists():
             media = "image/webp" if path.suffix == ".webp" else f"image/{path.suffix[1:]}"
-            return _serve(path, media.replace("image/jpg", "image/jpeg"), request)
+            return serve_file(path, request, media.replace("image/jpg", "image/jpeg"))
 
     raise HTTPException(status_code=404, detail=f"no frame {slot} in {group}")
 
@@ -168,4 +132,4 @@ def get_artifact(
         )
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"no artifact at {relative}")
-    return _serve(target, media, request)
+    return serve_file(target, request, media)

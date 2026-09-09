@@ -6,8 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .. import photos as photo_scan
@@ -23,6 +22,7 @@ from ..manifest import (
 from ..store import RunHandle, slugify
 from ..vendor import ffmpeg
 from .deps import get_run
+from .serving import serve_file
 
 router = APIRouter(prefix="/api/runs/{run_id}", tags=["clips"])
 
@@ -250,7 +250,9 @@ def delete_clip(clip_id: str, run: RunHandle = Depends(get_run)) -> None:
 
 
 @router.get("/clips/{clip_id}/poster")
-def get_poster(clip_id: str, run: RunHandle = Depends(get_run)) -> FileResponse:
+def get_poster(
+    request: Request, clip_id: str, run: RunHandle = Depends(get_run)
+) -> Response:
     poster = run.path("probe", f"{clip_id}.poster.jpg")
     if not poster.exists():
         clip = run.load().clip(clip_id)
@@ -260,7 +262,9 @@ def get_poster(clip_id: str, run: RunHandle = Depends(get_run)) -> FileResponse:
             _make_poster(run, clip)
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from None
-    return FileResponse(poster, media_type="image/jpeg")
+    # Same stable-path-changing-contents problem as every other artifact: a poster
+    # is rewritten when its clip's offset moves. See api/serving.py.
+    return serve_file(poster, request, "image/jpeg")
 
 
 # -- helpers -----------------------------------------------------------------
