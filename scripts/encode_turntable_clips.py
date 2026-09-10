@@ -104,6 +104,22 @@ def encode(ffmpeg: str, frames_dir: Path, first_frame: int, count: int, fps: int
     subprocess.run(command, check=True)
 
 
+def mux(ffmpeg: str, video: Path, audio: Path, out: Path) -> None:
+    """Put the audio track into an already-rendered clip, without touching the video.
+
+    ``-c:v copy`` is the whole point: Blender has already encoded the picture, and a second
+    generation of H.264 would soften exactly the fine weave the fixture exists to provide.
+    """
+    subprocess.run([
+        ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
+        "-i", str(video), "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-shortest", "-movflags", "+faststart",
+        str(out),
+    ], check=True)
+
+
 def probe(ffprobe: str, path: Path) -> dict:
     out = subprocess.run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
@@ -125,6 +141,10 @@ def probe(ffprobe: str, path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=r"D:\pgh-test\suzanne")
+    parser.add_argument(
+        "--mux", action="store_true",
+        help="the clips are already rendered as video; add audio without re-encoding",
+    )
     args = parser.parse_args()
 
     root = Path(args.root)
@@ -155,17 +175,24 @@ def main() -> int:
 
     report = {"true_offset_s": true_offset_s, "clap_at_master_s": clap_at_s, "clips": {}}
     for name, spec in plan.items():
-        frames_dir = root / f"frames-{name}"
-        found = len(list(frames_dir.glob("*.png")))
-        if found < total:
-            raise SystemExit(f"{frames_dir} holds {found} frames, expected {total}")
-
         begin = int(round(spec["start_s"] * SAMPLE_RATE))
         wav = root / f"audio-{name}.wav"
         write_wav(wav, master[begin : begin + int(round(spec["count"] / fps * SAMPLE_RATE))])
 
         out = root / f"{name}.mp4"
-        encode(ffmpeg, frames_dir, spec["first"], spec["count"], fps, wav, out)
+        if args.mux:
+            # Blender rendered the picture and baked the start offset into the frame range,
+            # so there is nothing left to trim -- only the audio to add.
+            silent = root / f"{name}.silent.mp4"
+            if not silent.exists():
+                out.rename(silent)
+            mux(ffmpeg, silent, wav, out)
+        else:
+            frames_dir = root / f"frames-{name}"
+            found = len(list(frames_dir.glob("*.png")))
+            if found < total:
+                raise SystemExit(f"{frames_dir} holds {found} frames, expected {total}")
+            encode(ffmpeg, frames_dir, spec["first"], spec["count"], fps, wav, out)
         info = probe(ffprobe, out)
         info["first_render_frame"] = spec["first"]
         info["clip_local_clap_s"] = clap_at_s - spec["start_s"]

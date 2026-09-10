@@ -394,6 +394,13 @@ def turntable(obj, directory, frames, resolution):
     scene.collection.objects.link(focus)
 
     camera_data = bpy.data.cameras.new("turntable")
+    # A new camera clips at 0.1-100, which is fine for a reconstruction in COLMAP's arbitrary
+    # units and useless once a rig baseline has scaled the model into millimetres: a 600 mm
+    # subject puts the camera ~1200 units back, the whole model falls beyond the far plane,
+    # and all 36 frames come out as empty background. Nothing errors, so the first sign is a
+    # blank turntable in the viewer. Derive the range from the model rather than assume one.
+    camera_data.clip_start = max(radius * 1e-3, 1e-4)
+    camera_data.clip_end = radius * 10.0
     camera = bpy.data.objects.new("turntable", camera_data)
     scene.collection.objects.link(camera)
     scene.camera = camera

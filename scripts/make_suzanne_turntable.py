@@ -76,6 +76,9 @@ CONFIG = {
     "start_offset_s": 1.0,
     "samples": 32,
     "render": False,
+    #: "video" writes H.264 directly, the way a phone would. "frames" writes one PNG per
+    #: frame -- lossless, and 6.3 GB of intermediates the pipeline never reads.
+    "output": "video",
 }
 
 
@@ -678,7 +681,20 @@ def write_ground_truth(cfg, subject, cameras, out_dir):
 # -- render ------------------------------------------------------------------------------
 
 
-def render_all(cfg, cameras, out_dir):
+def start_frame_for(cfg, name):
+    """First frame each camera records.
+
+    The raised camera starts late, by a whole number of frames. Two phones started by hand
+    never begin together, and baking that into the render means the clips arrive already
+    offset -- so ``sync.py`` has a real offset to rediscover rather than a zero to confirm.
+    """
+    if name != "cam-high":
+        return 1
+    return 1 + int(round(cfg["start_offset_s"] * cfg["fps"]))
+
+
+def render_frames(cfg, cameras, out_dir):
+    """One PNG per frame. Lossless, and 6.3 GB of it."""
     scene = bpy.context.scene
     written = {}
     for name, obj in cameras.items():
@@ -687,10 +703,74 @@ def render_all(cfg, cameras, out_dir):
         os.makedirs(target, exist_ok=True)
         # A trailing separator makes Blender name frames by number alone: 0001.png upward.
         scene.render.filepath = target + os.sep
+        scene.frame_start = start_frame_for(cfg, name)
         log("rendering " + name + " -> " + target)
         bpy.ops.render.render(animation=True)
         written[name] = target
     return written
+
+
+def render_video(cfg, cameras, out_dir):
+    """Straight to H.264, which is what the real capture will be.
+
+    Rendering stills and encoding afterwards puts 1,200 files and 6.3 GB on disk to produce
+    34 MB of video that a phone would have written directly. Every one of those files is a
+    write the filesystem, the indexer and the virus scanner each have to deal with, for an
+    intermediate nothing downstream reads -- the pipeline ingests the clip, never the frames.
+
+    Blender decorates a video filename with its frame range, so the file is renamed to the
+    plain name afterwards rather than trusting a guess about the decoration.
+    """
+    scene = bpy.context.scene
+    scene.render.image_settings.media_type = "VIDEO"
+    scene.render.image_settings.file_format = "FFMPEG"
+    ffmpeg = scene.render.ffmpeg
+    ffmpeg.format = "MPEG4"
+    ffmpeg.codec = "H264"
+    # Near-transparent quality. The subject's fine weave is the whole point of the fixture,
+    # and a codec that smooths it away would be measuring the encoder, not the rig.
+    ffmpeg.constant_rate_factor = "HIGH"
+    ffmpeg.ffmpeg_preset = "GOOD"
+    ffmpeg.gopsize = 12
+    ffmpeg.audio_codec = "NONE"
+
+    written = {}
+    for name, obj in cameras.items():
+        scene.camera = obj
+        scene.frame_start = start_frame_for(cfg, name)
+        scene.frame_end = cfg["frames"]
+        stem = os.path.join(out_dir, name)
+        scene.render.filepath = stem
+        log("rendering %s frames %d-%d -> %s.mp4" % (name, scene.frame_start, scene.frame_end, stem))
+        bpy.ops.render.render(animation=True)
+
+        produced = [
+            os.path.join(out_dir, f)
+            for f in os.listdir(out_dir)
+            if f.startswith(name) and f.lower().endswith(".mp4")
+        ]
+        final = stem + ".mp4"
+        decorated = [p for p in produced if os.path.abspath(p) != os.path.abspath(final)]
+        if decorated:
+            newest = max(decorated, key=os.path.getmtime)
+            if os.path.exists(final):
+                os.remove(final)
+            os.rename(newest, final)
+        written[name] = {
+            "path": final,
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "frames": scene.frame_end - scene.frame_start + 1,
+            "bytes": os.path.getsize(final),
+        }
+    scene.frame_start = 1
+    return written
+
+
+def render_all(cfg, cameras, out_dir):
+    if cfg.get("output", "video") == "frames":
+        return render_frames(cfg, cameras, out_dir)
+    return render_video(cfg, cameras, out_dir)
 
 
 # -- entry point -------------------------------------------------------------------------
