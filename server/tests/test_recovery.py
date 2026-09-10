@@ -9,6 +9,7 @@ import pytest
 
 from pgh.manifest import CaptureMode, SegmentKind, StageId, StageState
 from pgh.stages.mask import MaskStage
+from pgh.stages.sparse import SparseStage
 from pgh.stages.planned import planned_for
 from pgh.store import RunStore
 
@@ -142,3 +143,71 @@ def test_planned_stages_cover_every_unimplemented_stage(run_store):
         if stage_id in registry.implemented():
             continue
         assert planned_for(stage_id, manifest) is not None, f"{stage_id} has no stub copy"
+
+
+# -- masking is not optional when the subject is what moves ------------------
+#
+# `needs_background_mask` said the right thing from the beginning and nothing consulted it,
+# so the only feedback for a skipped mask arrived as prose *after* alignment finished --
+# 67 minutes, on the run that proved the point.
+
+
+def _ready_to_align(run, *, mode: CaptureMode, mask: StageState, allow: bool = False):
+    """A manifest that would pass preflight but for the capture mode and the mask."""
+
+    def mutate(manifest):
+        manifest.capture.mode = mode
+        manifest.stages[StageId.MASK].state = mask
+        select = manifest.stages[StageId.SELECT]
+        select.state = StageState.DONE
+        select.artifacts = {"selection": "select/selection.jsonl"}
+        select.metrics = {"selected": 200}
+        if allow:
+            manifest.stages[StageId.SPARSE].params = {"allow_degenerate": True}
+
+    return run.update(mutate)
+
+
+def _mask_problem(problems: list[str]) -> str | None:
+    return next((p for p in problems if "masking was skipped" in p), None)
+
+
+def test_alignment_refuses_a_chair_spin_with_no_mask(run_store):
+    manifest = _ready_to_align(
+        run_store.create("spin"), mode=CaptureMode.SUBJECT_ROTATES, mask=StageState.SKIPPED
+    )
+    problem = _mask_problem(SparseStage().preflight(manifest))
+    assert problem is not None
+    # It has to say what will happen, not just that something is wrong: the failure looks
+    # like success in every metric the stage reports.
+    assert "reconstruct the room" in problem
+
+
+def test_alignment_allows_a_chair_spin_once_masked(run_store):
+    manifest = _ready_to_align(
+        run_store.create("spin"), mode=CaptureMode.SUBJECT_ROTATES, mask=StageState.DONE
+    )
+    assert _mask_problem(SparseStage().preflight(manifest)) is None
+
+
+def test_classic_single_camera_photogrammetry_is_never_blocked(run_store):
+    """An orbit around a still subject is the case where masking actively hurts.
+
+    cup-1 lost 50,189 sparse points for 6,023 and gained a second submodel when masked, so
+    the guard must not so much as warn here.
+    """
+    manifest = _ready_to_align(
+        run_store.create("orbit"), mode=CaptureMode.CAMERA_ORBITS, mask=StageState.SKIPPED
+    )
+    assert _mask_problem(SparseStage().preflight(manifest)) is None
+
+
+def test_the_teaching_run_is_still_possible(run_store):
+    """HANDOVER 8 asks for one unmasked alignment, to see the failure first-hand."""
+    manifest = _ready_to_align(
+        run_store.create("spin"),
+        mode=CaptureMode.SUBJECT_ROTATES,
+        mask=StageState.SKIPPED,
+        allow=True,
+    )
+    assert _mask_problem(SparseStage().preflight(manifest)) is None

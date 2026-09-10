@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from .. import ply
+from .. import orient, ply
 from ..config import DATA_DIR
 from ..manifest import CaptureMode, RunManifest, StageId, StageState
 from ..proc import capture
@@ -71,6 +71,18 @@ REGISTRATION_WARN = 0.9
 
 #: Mean reprojection error above this suggests a bad intrinsic or a non-rigid scene.
 REPROJECTION_WARN_PX = 1.5
+
+#: How far a camera group's centres must spread, as a fraction of their distance from the
+#: scene, before we believe the camera actually moved. A camera going once round its subject
+#: scores about 1.0; one that never moved scores near zero.
+#:
+#: This exists because every other health signal passes on a capture that never moved. A
+#: synthetic subject-rotates run with masking skipped registered 227 of 228 images into a
+#: single model at 0.78 px mean reprojection error -- better than the good runs -- and its
+#: camera centres were 0.00% spread: COLMAP had reconstructed the *room* from a fixed pair
+#: of viewpoints and discarded the subject. Registration rate, reprojection error and
+#: planarity all called that healthy. Only the geometry knew.
+STATIONARY_RATIO_FAIL = 0.02
 
 
 class SparseParams(StageParams):
@@ -136,6 +148,17 @@ class SparseParams(StageParams):
         ge=3,
         description="Smallest number of images COLMAP will call a reconstruction.",
     )
+    allow_degenerate: bool = Field(
+        False,
+        description=(
+            "Align anyway when the capture is known to be ill-posed -- masking skipped "
+            "on a capture where the subject rotated, or cameras that never moved. Both "
+            "normally stop the stage before it spends an hour on a reconstruction of "
+            "the room. Turn this on deliberately: HANDOVER 8 recommends running one "
+            "unmasked alignment precisely to see that failure, and the resulting model "
+            "is still written so you can look at it."
+        ),
+    )
 
 
 class SparseStage(Stage):
@@ -177,6 +200,23 @@ class SparseStage(Stage):
             )
         if colmap_dialect().get("available") is False:
             problems.append("COLMAP was not found; check the doctor page")
+
+        # The one capture mode where a skipped mask is not a preference but a broken
+        # reconstruction. Checked here rather than in the skip endpoint because skipping is
+        # legitimate right up until the moment an hour of solving is about to be spent on it.
+        params = manifest.stages[StageId.SPARSE].params or {}
+        if (
+            manifest.capture.needs_background_mask
+            and manifest.stages[StageId.MASK].state is StageState.SKIPPED
+            and not params.get("allow_degenerate", False)
+        ):
+            problems.append(
+                "the subject rotates while the cameras stay put, and masking was skipped. "
+                "The room is static and the subject is not, so the solver has an exact "
+                "wrong answer available -- it will reconstruct the room and discard the "
+                "subject, while reporting a high registration rate and a low reprojection "
+                "error. Run the mask stage, or set allow_degenerate to do it anyway."
+            )
         return problems
 
     def run(self, ctx: StageContext) -> StageResult:
@@ -273,6 +313,26 @@ class SparseStage(Stage):
         best, model, sizes = _pick_best(ctx, scratch, submodels)
         analyzer = _analyze(best)
 
+        motion = orient.camera_motion(
+            [{"name": image.name, "center": list(image.center())} for image in model.images],
+            model.points_centroid,
+        )
+        stationary = {g: r for g, r in motion.items() if r < STATIONARY_RATIO_FAIL}
+        if stationary and not params.allow_degenerate:
+            detail = "; ".join(
+                f"{group} moved {ratio * 100:.2f}% of its distance to the subject"
+                for group, ratio in sorted(stationary.items())
+            )
+            raise RuntimeError(
+                f"the cameras did not move: {detail}. Structure from motion needs motion, "
+                "and this model was solved from what amounts to a single viewpoint per "
+                "camera -- so it describes whatever was stationary in frame rather than "
+                "the subject. Nothing downstream can recover from that, which is why it "
+                "stops here rather than after the dense stage. On a capture where the "
+                "subject rotates, the usual cause is a missing or leaking mask. Set "
+                "allow_degenerate to keep the model anyway and look at it."
+            )
+
         cloud_points = _write_outputs(ctx, scratch, best, model, submitted)
         # Record which submodel won before committing: the dense stage would
         # otherwise have to re-derive it, and "largest folder on disk" is a proxy for
@@ -282,7 +342,7 @@ class SparseStage(Stage):
 
         metrics, warnings = _summarise(
             ctx.manifest, model, analyzer, submitted, sizes, matcher, cloud_points,
-            masked=mask_dir is not None,
+            masked=mask_dir is not None, motion=motion,
         )
         return StageResult(
             artifacts={
@@ -552,6 +612,7 @@ def _summarise(
     cloud_points: int,
     *,
     masked: bool = False,
+    motion: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     registered = len(model.images)
     rate = registered / len(submitted) if submitted else 0.0
@@ -578,6 +639,10 @@ def _summarise(
         "num_submodels": len(sizes),
         "submodel_sizes": sizes,
         "preview_points": cloud_points,
+        # How far each camera actually travelled, relative to its distance from the
+        # subject. Recorded even when it passes, because it is the one number that told
+        # the truth about the collapsed control run when every other one read healthy.
+        "camera_motion": {g: round(r, 4) for g, r in sorted((motion or {}).items())},
         "cameras": [
             {
                 "camera_id": c.camera_id,
@@ -591,6 +656,23 @@ def _summarise(
     }
 
     warnings: list[str] = []
+
+    if motion:
+        weakest_group = min(motion, key=lambda g: motion[g])
+        weakest = motion[weakest_group]
+        if weakest < STATIONARY_RATIO_FAIL:
+            warnings.append(
+                f"{weakest_group} barely moved ({weakest * 100:.2f}% of its distance to "
+                "the subject) and this model was kept anyway because allow_degenerate is "
+                "set. It describes whatever was stationary in frame, not the subject; do "
+                "not read anything into the numbers above it."
+            )
+        elif weakest < 0.2:
+            warnings.append(
+                f"{weakest_group} moved only {weakest * 100:.0f}% of its distance to the "
+                "subject, so this is a narrow arc rather than an orbit. The far side of "
+                "the subject was never seen and the mesher will invent it."
+            )
 
     if rate < REGISTRATION_WARN:
         missing = len(submitted) - registered

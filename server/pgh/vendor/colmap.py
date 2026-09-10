@@ -317,6 +317,12 @@ class SparseModel:
     num_points3D: int = 0
     mean_track_length: float | None = None
     mean_reprojection_error_px: float | None = None
+    #: Centroid of the triangulated points, and their mean distance from it. A
+    #: reconstruction has no units, so any statement about whether the cameras moved
+    #: "enough" has to be relative to something in the same frame; this is that
+    #: something. Collected here because ``points3D.txt`` is already being read.
+    points_centroid: tuple[float, float, float] | None = None
+    points_radius: float | None = None
 
 
 def _quat_to_matrix(w: float, x: float, y: float, z: float) -> list[list[float]]:
@@ -390,12 +396,18 @@ def read_text_model(model_dir: Path) -> SparseModel:
     if points_txt.exists():
         track_lengths: list[int] = []
         errors: list[float] = []
+        xs: list[float] = []
+        ys: list[float] = []
+        zs: list[float] = []
         for line in points_txt.read_text(encoding="utf-8").splitlines():
             if not line or line.startswith("#"):
                 continue
             parts = line.split()
             if len(parts) < 8:
                 continue
+            xs.append(float(parts[1]))
+            ys.append(float(parts[2]))
+            zs.append(float(parts[3]))
             errors.append(float(parts[7]))
             track_lengths.append(max(0, (len(parts) - 8) // 2))
         model.num_points3D = len(track_lengths)
@@ -403,6 +415,13 @@ def read_text_model(model_dir: Path) -> SparseModel:
             model.mean_track_length = sum(track_lengths) / len(track_lengths)
         if errors:
             model.mean_reprojection_error_px = sum(errors) / len(errors)
+        if xs:
+            count = len(xs)
+            centroid = (sum(xs) / count, sum(ys) / count, sum(zs) / count)
+            model.points_centroid = centroid
+            model.points_radius = sum(
+                math.dist((x, y, z), centroid) for x, y, z in zip(xs, ys, zs)
+            ) / count
 
     return model
 

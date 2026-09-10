@@ -38,6 +38,7 @@ and ``sync.py``.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -47,9 +48,53 @@ import numpy as np
 #: the fit was loose rather than reporting it as though it were exact.
 PLANAR_RATIO_WARN = 0.15
 
+#: Below this ratio of middle to greatest variance the camera centres span a line rather
+#: than a plane, so there is no plane to fit and no up axis in them.
+COLLINEAR_RATIO = 1e-3
+
 
 def _centres(poses: list[dict]) -> np.ndarray:
     return np.asarray([p["center"] for p in poses], dtype=np.float64)
+
+
+def camera_motion(poses: list[dict], scene_centre: Sequence[float] | None) -> dict[str, float]:
+    """How far each camera group travelled, relative to its distance from the scene.
+
+    One number per camera group: the mean distance of its centres from their own centroid,
+    divided by their mean distance from the scene. Dividing by the *standoff* rather than by
+    the subject's size is what makes it comparable between captures -- a camera taken once
+    around its subject scores about 1.0 whether the subject is a coffee cup or a person,
+    while a camera that never moved scores near zero however many frames it recorded and
+    however confidently they registered.
+
+    Per *group* rather than over all cameras, because a two-camera rig separated by its
+    baseline looks like motion if you pool them: the pair spans the baseline while neither
+    camera has moved at all. Each camera has to have gone somewhere on its own.
+
+    Returns an empty mapping when there is nothing to measure against -- no points, or
+    cameras sitting on top of the scene centroid -- rather than inventing a ratio.
+    """
+    if scene_centre is None:
+        return {}
+    centre = np.asarray(scene_centre, dtype=np.float64)
+
+    grouped: dict[str, list[np.ndarray]] = defaultdict(list)
+    for pose in poses:
+        name = str(pose["name"])
+        group = name.partition("/")[0] if "/" in name else ""
+        grouped[group].append(np.asarray(pose["center"], dtype=np.float64))
+
+    motion: dict[str, float] = {}
+    for group, centres in grouped.items():
+        if len(centres) < 2:
+            continue
+        stack = np.asarray(centres)
+        standoff = float(np.linalg.norm(stack - centre, axis=1).mean())
+        if standoff <= 0:
+            continue
+        spread = float(np.linalg.norm(stack - stack.mean(axis=0), axis=1).mean())
+        motion[group] = spread / standoff
+    return motion
 
 
 def plane_fit(centres: np.ndarray) -> tuple[np.ndarray, float]:
@@ -75,9 +120,22 @@ def plane_fit(centres: np.ndarray) -> tuple[np.ndarray, float]:
     normal = vectors[-1]
     if normal[int(np.argmax(np.abs(normal)))] < 0:
         normal = -normal
+    normal = normal / np.linalg.norm(normal)
 
-    planarity = float(singular[-1] / singular[0]) if singular[0] > 0 else 0.0
-    return normal / np.linalg.norm(normal), planarity
+    if singular[0] <= 0:
+        return normal, 1.0
+
+    # Least-over-greatest is 0 for a perfect plane and *also* 0 for a straight line, which
+    # is a real capture and not a hypothetical: a subject-rotates run with masking skipped
+    # collapses its cameras onto two points, and this returned 0.000003 -- flatter-looking
+    # than a genuine orbit's 0.043, from a plane fitted through a line. Two spanning
+    # directions are what makes a plane, so the middle singular value decides whether there
+    # was a plane to fit at all, and a degenerate fit reports the worst score rather than
+    # the best one.
+    if float(singular[1] / singular[0]) < COLLINEAR_RATIO:
+        return normal, 1.0
+
+    return normal, float(singular[-1] / singular[0])
 
 
 def up_axis(poses: list[dict], *, flip: bool = False) -> tuple[np.ndarray, float]:
